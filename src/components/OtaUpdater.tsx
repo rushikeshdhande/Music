@@ -15,25 +15,47 @@ export const getOtaInfo = () => ({
 });
 
 export default function OtaUpdater() {
-  // 1. ALL HOOKS MUST BE CALLED HERE, AT THE TOP LEVEL.
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const lastCheckAt = useRef(0);
   const inFlight = useRef<Promise<void> | null>(null);
 
   const runCheck = useCallback(async (force = false): Promise<void> => {
-    if (__DEV__ || !Updates.isEnabled) return;
-    if (!force && Date.now() - lastCheckAt.current < MIN_GAP_MS) return;
-    if (inFlight.current) return inFlight.current;
+    // 🔥 DIAGNOSTIC LOGS: Check your terminal/logcat for these messages
+    if (__DEV__) {
+      console.log("[OTA] Skipped: Running in development mode (__DEV__ is true).");
+      return;
+    }
+    if (!Updates.isEnabled) {
+      console.log("[OTA] Skipped: Updates are not enabled in this build.");
+      return;
+    }
+    if (!force && Date.now() - lastCheckAt.current < MIN_GAP_MS) {
+      console.log("[OTA] Skipped: Checking too frequently (MIN_GAP_MS).");
+      return;
+    }
+    if (inFlight.current) {
+      console.log("[OTA] Skipped: Check already in progress.");
+      return inFlight.current;
+    }
 
     inFlight.current = (async () => {
       lastCheckAt.current = Date.now();
       try {
+        console.log("[OTA] Checking for update...");
+        console.log(`[OTA] Current Channel: ${Updates.channel}`);
+        console.log(`[OTA] Current Runtime Version: ${Updates.runtimeVersion}`);
+        console.log(`[OTA] Is Embedded Launch: ${Updates.isEmbeddedLaunch}`);
+
         const res = await Updates.checkForUpdateAsync();
+        
         if (res.isAvailable) {
+          console.log("[OTA] ✅ Update is available!");
           setUpdateAvailable(true);
+        } else {
+          console.log("[OTA] ❌ No update available.");
         }
       } catch (e) {
-        console.log("[OTA] check failed:", e);
+        console.log("[OTA] Check failed with error:", e);
       } finally {
         inFlight.current = null;
       }
@@ -43,10 +65,17 @@ export default function OtaUpdater() {
   }, []);
 
   useEffect(() => {
+    // 1. Run check immediately on mount
     void runCheck();
+
+    // 2. Listen to AppState changes to check when app comes to foreground
     const sub = AppState.addEventListener("change", (s) => {
-      if (s === "active") void runCheck();
+      if (s === "active") {
+        console.log("[OTA] App became active, checking for updates...");
+        void runCheck();
+      }
     });
+    
     return () => sub.remove();
   }, [runCheck]);
 
@@ -61,7 +90,6 @@ export default function OtaUpdater() {
     setUpdateAvailable(false);
   };
 
-  // 2. ONLY RETURN JSX AFTER ALL HOOKS HAVE BEEN CALLED.
   return (
     <Modal
       animationType="fade"
@@ -73,7 +101,6 @@ export default function OtaUpdater() {
         <View style={styles.modalView}>
           <Text style={styles.modalTitle}>New Update Available!</Text>
           
-          {/* 🔥 UPDATED TEXT HERE */}
           <Text style={styles.modalText}>
             Please download the latest apk after 2pm
           </Text>

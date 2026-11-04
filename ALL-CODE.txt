@@ -4,12 +4,12 @@
   "expo": {
     "name": "Music",
     "slug": "local-music-video-player",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/images/applogo-icon.png",
     "android": {
       "package": "com.netease.cloudmusic",
-      "versionCode": 8,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/applogo-adaptive.png",
         "backgroundColor": "#000000"
@@ -21,7 +21,12 @@
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.WAKE_LOCK",
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.RECORD_AUDIO"
       ],
       "intentFilters": [
         {
@@ -39,13 +44,16 @@
             "DEFAULT"
           ]
         }
-      ]
+      ],
+      "runtimeVersion": {
+        "policy": "appVersion"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.localmedia.player",
       "icon": "./assets/images/applogo-icon.png",
       "supportsTablet": true,
-      "buildNumber": "6",
+      "buildNumber": "7",
       "associatedDomains": [
         "applinks:rushicdhande.vercel.app"
       ],
@@ -79,7 +87,7 @@
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
             "enableProguardInReleaseBuilds": true,
-            "extraProguardRules": "-keep class expo.modules.** { *; }\n-keep class com.facebook.react.** { *; }\n-keep class com.swmansion.reanimated.** { *; }\n-keep class com.swmansion.gesturehandler.** { *; }\n-keep class com.rntp.player.** { *; }\n-keep class com.reactnative.** { *; }\n-dontwarn okhttp3.**\n-dontwarn okio.**\n-dontwarn javax.annotation.**\n-dontwarn kotlinx.**"
+            "extraProguardRules": "-keep class expo.modules.** { *; }\n-keep class com.facebook.react.** { *; }\n-keep class com.swmansion.reanimated.** { *; }\n-keep class com.swmansion.gesturehandler.** { *; }\n-keep class com.doublesymmetry.trackplayer.** { *; }\n-keep class com.reactnative.** { *; }\n-dontwarn okhttp3.**\n-dontwarn okio.**\n-dontwarn javax.annotation.**\n-dontwarn kotlinx.**"
           }
         }
       ],
@@ -233,53 +241,12 @@
 ========== index.js ==========
 // index.js
 import { registerRootComponent } from 'expo';
-import TrackPlayer, { PlayerCommand } from '@rntp/player';
+import TrackPlayer from 'react-native-track-player';
 import App from './App';
 
-TrackPlayer.registerPlaybackSession(async () => {
-  // ---------- 1. Setup player ----------
-  try {
-    await TrackPlayer.setupPlayer({
-      // â­ This is THE critical flag for capsule / lock-screen / notification.
-      // Without 'music' the OS treats the notification as a generic one
-      // and it will NOT show in ColorOS Aqua Dynamics or any media surface.
-      contentType: 'music',
-
-      // Pause when headphones unplugged / Bluetooth disconnects
-      handleAudioBecomingNoisy: true,
-
-      // Auto-pause on calls, auto-resume afterwards
-      autoHandleInterruptions: true,
-
-      android: {
-        // â­ Keeps the foreground service + notification alive when the
-        // user swipes the app away from recents. Without this the capsule
-        // disappears the moment the app is removed from the recents list.
-        taskRemovedBehavior: 'continue',
-      },
-    });
-    console.log('[RNTP] Player ready');
-  } catch (err) {
-    // Expected on hot reload / resume â€” safe to ignore.
-    console.log('[RNTP] setupPlayer skipped:', err?.message);
-  }
-
-  // ---------- 2. Remote commands (capsule / lock screen buttons) ----------
-  try {
-    await TrackPlayer.setCommands({
-      capabilities: [
-        PlayerCommand.PlayPause,   // play / pause toggle
-        PlayerCommand.Next,        // skip forward
-        PlayerCommand.Previous,    // skip back
-        PlayerCommand.Seek,        // drag progress bar
-        PlayerCommand.Stop,        // stop button
-      ],
-    });
-    console.log('[RNTP] Commands registered');
-  } catch (err) {
-    console.log('[RNTP] setCommands failed:', err?.message);
-  }
-});
+// Register the service so background controls (lock screen, notification) work.
+// Note the `.default` at the end, because we are using ES modules in the service file.
+TrackPlayer.registerPlaybackService(() => require('./src/services/playbackService').default);
 
 registerRootComponent(App);
 
@@ -5017,7 +4984,7 @@ const styles = StyleSheet.create({
   },
 });
 
-========== src\components\OtaUpdater.tsx ==========
+========== src\components\OtaUpdater copy.tsx ==========
 // src/components/OtaUpdater.tsx
 import { useEffect } from "react";
 import { AppState } from "react-native";
@@ -5069,6 +5036,169 @@ export default function OtaUpdater() {
 
   return null;
 }
+
+========== src\components\OtaUpdater.tsx ==========
+// src/components/OtaUpdater.tsx
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { AppState, Modal, View, Text, TouchableOpacity, StyleSheet, Linking } from "react-native";
+import * as Updates from "expo-updates";
+
+const DOWNLOAD_URL = "https://rushicdhande.vercel.app/music";
+const MIN_GAP_MS = 30_000;
+
+export const getOtaInfo = () => ({
+  enabled: Updates.isEnabled,
+  channel: Updates.channel,
+  runtimeVersion: Updates.runtimeVersion,
+  updateId: Updates.updateId,
+  isEmbeddedLaunch: Updates.isEmbeddedLaunch,
+});
+
+export default function OtaUpdater() {
+  // 1. ALL HOOKS MUST BE CALLED HERE, AT THE TOP LEVEL.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const lastCheckAt = useRef(0);
+  const inFlight = useRef<Promise<void> | null>(null);
+
+  const runCheck = useCallback(async (force = false): Promise<void> => {
+    if (__DEV__ || !Updates.isEnabled) return;
+    if (!force && Date.now() - lastCheckAt.current < MIN_GAP_MS) return;
+    if (inFlight.current) return inFlight.current;
+
+    inFlight.current = (async () => {
+      lastCheckAt.current = Date.now();
+      try {
+        const res = await Updates.checkForUpdateAsync();
+        if (res.isAvailable) {
+          setUpdateAvailable(true);
+        }
+      } catch (e) {
+        console.log("[OTA] check failed:", e);
+      } finally {
+        inFlight.current = null;
+      }
+    })();
+
+    return inFlight.current;
+  }, []);
+
+  useEffect(() => {
+    void runCheck();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") void runCheck();
+    });
+    return () => sub.remove();
+  }, [runCheck]);
+
+  const handleDownload = () => {
+    setUpdateAvailable(false);
+    Linking.openURL(DOWNLOAD_URL).catch((err) => {
+      console.error("Failed to open URL:", err);
+    });
+  };
+
+  const handleDismiss = () => {
+    setUpdateAvailable(false);
+  };
+
+  // 2. ONLY RETURN JSX AFTER ALL HOOKS HAVE BEEN CALLED.
+  return (
+    <Modal
+      animationType="fade"
+      transparent={true}
+      visible={updateAvailable}
+      onRequestClose={handleDismiss}
+    >
+      <View style={styles.centeredView}>
+        <View style={styles.modalView}>
+          <Text style={styles.modalTitle}>New Update Available!</Text>
+          
+          {/* ðŸ”¥ UPDATED TEXT HERE */}
+          <Text style={styles.modalText}>
+            Please download the latest apk after 2pm
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.button, styles.buttonDownload]}
+            onPress={handleDownload}
+          >
+            <Text style={styles.textStyle}>Download</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.buttonClose]}
+            onPress={handleDismiss}
+          >
+            <Text style={styles.textStyle}>Later</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  centeredView: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  modalView: {
+    margin: 20,
+    backgroundColor: "#1c1c1e",
+    borderRadius: 20,
+    padding: 35,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+    borderWidth: 1,
+    borderColor: "#3a3a3c",
+    width: "85%",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#ffffff",
+    marginBottom: 15,
+    textAlign: "center",
+  },
+  modalText: {
+    marginBottom: 20,
+    textAlign: "center",
+    color: "#a1a1aa",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  button: {
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    elevation: 2,
+    width: "100%",
+    marginBottom: 10,
+  },
+  buttonDownload: {
+    backgroundColor: "#f92c47",
+  },
+  buttonClose: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "#3a3a3c",
+  },
+  textStyle: {
+    color: "white",
+    fontWeight: "600",
+    textAlign: "center",
+    fontSize: 16,
+  },
+});
 
 ========== src\components\playerShared.ts ==========
 // src/components/playerShared.ts
@@ -6417,7 +6547,7 @@ export function useArtworkCache(songs: { id: string }[]) {
 
 ========== src\hooks\useAudioPlayer.ts ==========
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RepeatMode } from "react-native-track-player";
+import { RepeatMode, State, Capability } from "react-native-track-player";
 import { usePlayerStore } from "../store/playerStore";
 import { Song } from "../types";
 import {
@@ -6451,12 +6581,17 @@ function getSafeHooks(): SafeHooks {
   if (!isTrackPlayerAvailable()) return fallback;
 
   try {
-    // ðŸ”¥ FIX: Changed from "@rntp/player" to "react-native-track-player"
     const mod = require("react-native-track-player");
     return {
-      useIsPlaying: mod.useIsPlaying ?? fallback.useIsPlaying,
+      useIsPlaying: () => {
+        try {
+          const state = mod.usePlaybackState();
+          return state.state === mod.State.Playing;
+        } catch {
+          return false;
+        }
+      },
       useProgress: mod.useProgress ?? fallback.useProgress,
-      // ðŸ”¥ FIX: v4 uses useActiveTrack instead of useActiveMediaItem
       useActiveMediaItem: mod.useActiveTrack ?? fallback.useActiveMediaItem,
     };
   } catch (error) {
@@ -6472,29 +6607,20 @@ const toNativeRepeat = (mode: "off" | "queue" | "track") =>
       ? RepeatMode.Queue
       : RepeatMode.Off;
 
-// v5: getProgress() is synchronous. Falls back to the old calls / store.
-function readPosition(TP: any): number {
+async function readPosition(TP: any): Promise<number> {
   try {
-    if (typeof TP.getProgress === "function") {
-      const p = TP.getProgress();
-      if (p && typeof p.position === "number") return p.position;
-    }
     if (typeof TP.getPosition === "function") {
-      const v = Number(TP.getPosition());
+      const v = Number(await TP.getPosition());
       if (Number.isFinite(v)) return v;
     }
   } catch {}
   return usePlayerStore.getState().position;
 }
 
-function readDuration(TP: any): number {
+async function readDuration(TP: any): Promise<number> {
   try {
-    if (typeof TP.getProgress === "function") {
-      const p = TP.getProgress();
-      if (p && typeof p.duration === "number") return p.duration;
-    }
     if (typeof TP.getDuration === "function") {
-      const v = Number(TP.getDuration());
+      const v = Number(await TP.getDuration());
       if (Number.isFinite(v)) return v;
     }
   } catch {}
@@ -6502,7 +6628,54 @@ function readDuration(TP: any): number {
 }
 
 // ===========================================================================
-// Module-level shared state (shared by EVERY useAudioPlayer() call)
+// ðŸ”¥ Ensure Player Setup
+// ===========================================================================
+let isSetup = false;
+
+async function ensurePlayerSetup() {
+  if (isSetup) return;
+  
+  // âœ… FIX: Declare TP outside the try/catch so it's accessible in both blocks
+  const TP = getTrackPlayer();
+
+  try {
+    // Attempt to get state. If it throws, it's not initialized.
+    await TP.getState();
+    isSetup = true;
+  } catch (err) {
+    try {
+      await TP.setupPlayer({ autoHandleInterruptions: true });
+      await TP.updateOptions({
+        capabilities: [
+          Capability.Play,
+          Capability.Pause,
+          Capability.SkipToNext,
+          Capability.SkipToPrevious,
+          Capability.SeekTo,
+          Capability.Stop,
+        ],
+        compactCapabilities: [
+          Capability.Play,
+          Capability.Pause,
+          Capability.SkipToNext,
+        ],
+      });
+      isSetup = true;
+    } catch (setupErr: any) {
+      if (
+        setupErr.message &&
+        setupErr.message.includes("already been initialized")
+      ) {
+        isSetup = true;
+      } else {
+        console.error("[TrackPlayer] setupPlayer failed", setupErr);
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// Module-level shared state
 // ===========================================================================
 
 const USE_SKIP = true;
@@ -6525,28 +6698,22 @@ const isPending = (): boolean => {
   return true;
 };
 
-/** true => this report is stale and must be ignored */
 const shouldIgnoreDetected = (id: string | undefined): boolean => {
   if (!isPending()) return false;
   if (id != null && id === pendingId) {
-    pendingId = null; // native caught up
+    pendingId = null;
     return false;
   }
   return true;
 };
 
-// Every click gets a token; older async work is dropped.
 let playToken = 0;
-
-// Which queue (by song ids) the native player currently holds.
 let nativeQueueSig = "";
 const queueSig = (songs: Song[]) => songs.map((s) => String(s.id)).join("|");
 
-// Let React draw the new song / icons BEFORE the heavy native work starts.
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-// Converting a whole queue on every click is slow; convert each song once.
 const mediaItemCache = new WeakMap<object, any>();
 const toMediaItems = (songs: Song[]) =>
   songs.map((song) => {
@@ -6558,7 +6725,6 @@ const toMediaItems = (songs: Song[]) =>
     return item;
   });
 
-// Only ONE hook instance runs the sync effects (detection, progress, etc).
 let instanceCounter = 0;
 let ownerId: number | null = null;
 const waiters = new Map<number, (isOwner: boolean) => void>();
@@ -6593,7 +6759,6 @@ export function useAudioPlayer() {
   const playing =
     typeof playingResult === "boolean" ? playingResult : playingResult.playing;
 
-  // Progress â€” updates every 500ms
   const { position, duration } = useProgress(0.5);
   const activeTrack = useActiveMediaItem();
 
@@ -6605,27 +6770,23 @@ export function useAudioPlayer() {
   const queue = usePlayerStore((s) => s.queue);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
 
-  // ---- owner election: only one instance runs the sync effects ----
   const idRef = useRef(0);
   if (!idRef.current) idRef.current = ++instanceCounter;
   const [isOwner, setIsOwner] = useState(false);
   useEffect(() => registerInstance(idRef.current, setIsOwner), []);
 
-  // ---- 1. playing state sync ----
   useEffect(() => {
     if (!isOwner) return;
     if (!playing && isPending()) return;
     setPlaying(playing);
   }, [isOwner, playing, setPlaying]);
 
-  // ---- 2. progress sync ----
   useEffect(() => {
     if (!isOwner) return;
     if (isPending()) return;
     setProgress(position, duration);
   }, [isOwner, position, duration, setProgress]);
 
-  // ---- 3. TRACK CHANGE DETECTION (one instance only) ----
   useEffect(() => {
     if (!isOwner) return;
     if (!isTrackPlayerAvailable()) return;
@@ -6643,45 +6804,23 @@ export function useAudioPlayer() {
       try {
         const store = usePlayerStore.getState();
         const q = store.queue;
-        const ci = store.currentIndex;
-
         if (q.length === 0) return;
 
         let activeId: string | undefined;
         let activeIndex: number | undefined;
 
-        if (typeof TP.getActiveMediaItem === "function") {
+        if (typeof TP.getActiveTrack === "function") {
           try {
-            const item = await TP.getActiveMediaItem();
-            if (item) {
-              const mid = item.mediaId ?? item.id;
-              if (mid != null) activeId = String(mid);
-              if (typeof item.index === "number") activeIndex = item.index;
+            const t = await TP.getActiveTrack();
+            if (t && t.id != null) {
+              activeId = String(t.id);
             }
           } catch {}
         }
 
-        if (!activeId && typeof TP.getActiveTrack === "function") {
+        if (typeof TP.getActiveTrackIndex === "function") {
           try {
-            const t = await TP.getActiveTrack();
-            const mid = t?.mediaId ?? t?.id;
-            if (mid != null) activeId = String(mid);
-          } catch {}
-        }
-
-        if (
-          activeIndex == null &&
-          typeof TP.getActiveMediaItemIndex === "function"
-        ) {
-          try {
-            const r = await TP.getActiveMediaItemIndex();
-            if (typeof r === "number") activeIndex = r;
-          } catch {}
-        }
-
-        if (activeIndex == null && typeof TP.getCurrentIndex === "function") {
-          try {
-            const r = await TP.getCurrentIndex();
+            const r = await TP.getActiveTrackIndex();
             if (typeof r === "number") activeIndex = r;
           } catch {}
         }
@@ -6702,14 +6841,9 @@ export function useAudioPlayer() {
 
         const latest = usePlayerStore.getState();
         if (reportedIndex !== latest.currentIndex) {
-          console.log(
-            `[TrackDetect] index ${latest.currentIndex} â†’ ${reportedIndex} :`,
-            latest.queue[reportedIndex]?.title,
-          );
           latest.setCurrentIndex(reportedIndex);
         }
       } catch {
-        // ignore
       } finally {
         running = false;
       }
@@ -6741,29 +6875,25 @@ export function useAudioPlayer() {
     };
   }, [isOwner]);
 
-  // ---- 4. activeTrack hook fallback ----
   useEffect(() => {
     if (!isOwner) return;
-    const aid = activeTrack?.mediaId ?? activeTrack?.id;
+    const aid = activeTrack?.id;
     if (!aid) return;
 
     if (shouldIgnoreDetected(String(aid))) return;
 
     const idx = queue.findIndex((s) => String(s.id) === String(aid));
     if (idx >= 0 && idx !== currentIndex) {
-      console.log("[TrackDetect:hook] â†’", idx, queue[idx]?.title);
       setCurrentIndex(idx);
     }
   }, [
     isOwner,
-    activeTrack?.mediaId,
     activeTrack?.id,
     queue,
     currentIndex,
     setCurrentIndex,
   ]);
 
-  // ---- 5. Safety net: auto-play next song when the current one ends ----
   const nextRef = useRef<() => Promise<void>>(async () => {});
   const endHandledRef = useRef<string | null>(null);
   const endTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -6805,7 +6935,6 @@ export function useAudioPlayer() {
     };
   }, []);
 
-  // ---- loadAndPlay ----
   const loadAndPlay = useCallback(
     async (songs: Song[], startIndex: number): Promise<void> => {
       if (!songs.length) throw new Error("Playback queue is empty.");
@@ -6823,8 +6952,11 @@ export function useAudioPlayer() {
       const token = ++playToken;
 
       try {
-        if (typeof TP.setMediaItems !== "function") {
-          throw new Error("RNTP V5 setMediaItems() is unavailable.");
+        // ðŸ”¥ FIX: Ensure player is setup before doing anything
+        await ensurePlayerSetup();
+
+        if (typeof TP.add !== "function") {
+          throw new Error("RNTP add() is unavailable.");
         }
 
         setPending(songs[startIndex].id);
@@ -6834,7 +6966,10 @@ export function useAudioPlayer() {
         await nextFrame();
 
         if (token !== playToken) return;
-        await TP.setMediaItems(toMediaItems(songs), startIndex);
+        
+        await TP.reset();
+        await TP.add(toMediaItems(songs));
+        await TP.skip(startIndex);
         nativeQueueSig = queueSig(songs);
 
         if (token !== playToken) return;
@@ -6861,10 +6996,9 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      const actualPlaying =
-        typeof TP.isPlaying === "function"
-          ? TP.isPlaying()
-          : usePlayerStore.getState().isPlaying;
+      await ensurePlayerSetup();
+      const state = await TP.getState();
+      const actualPlaying = state === State.Playing;
 
       if (actualPlaying) {
         await TP.pause();
@@ -6897,6 +7031,8 @@ export function useAudioPlayer() {
       const token = ++playToken;
 
       try {
+        await ensurePlayerSetup();
+        
         setPending(songs[targetIndex].id);
         setCurrentIndex(targetIndex);
         setProgress(0, songs[targetIndex].duration || 0);
@@ -6908,22 +7044,21 @@ export function useAudioPlayer() {
         let skipped = false;
 
         if (USE_SKIP && sig === nativeQueueSig) {
-          for (const fn of ["skipToIndex", "skipTo"]) {
-            if (typeof TP[fn] === "function") {
-              try {
-                await TP[fn](targetIndex);
-                skipped = true;
-                break;
-              } catch {}
-            }
+          if (typeof TP.skip === "function") {
+            try {
+              await TP.skip(targetIndex);
+              skipped = true;
+            } catch {}
           }
         }
 
         if (!skipped) {
-          if (typeof TP.setMediaItems !== "function") {
-            throw new Error("RNTP V5 setMediaItems() is unavailable.");
+          if (typeof TP.add !== "function") {
+            throw new Error("RNTP add() is unavailable.");
           }
-          await TP.setMediaItems(toMediaItems(songs), targetIndex);
+          await TP.reset();
+          await TP.add(toMediaItems(songs));
+          await TP.skip(targetIndex);
           nativeQueueSig = sig;
         }
 
@@ -6958,7 +7093,9 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      if (readPosition(TP) > 3) {
+      await ensurePlayerSetup();
+      const pos = await readPosition(TP);
+      if (pos > 3) {
         await TP.seekTo(0);
         setProgress(0, usePlayerStore.getState().duration);
         return;
@@ -6980,6 +7117,7 @@ export function useAudioPlayer() {
   const seek = useCallback(async (value: number) => {
     if (!isTrackPlayerAvailable()) return;
     try {
+      await ensurePlayerSetup();
       await getTrackPlayer().seekTo(value);
     } catch (error) {
       console.error("[seek] Failed:", error);
@@ -6991,8 +7129,9 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      const pos = readPosition(TP);
-      const dur = readDuration(TP);
+      await ensurePlayerSetup();
+      const pos = await readPosition(TP);
+      const dur = await readDuration(TP);
       await TP.seekTo(Math.max(0, Math.min(dur, pos + delta)));
     } catch (error) {
       console.error("[seekBy] Failed:", error);
@@ -7036,13 +7175,17 @@ export function useAudioPlayer() {
     if (!isTrackPlayerAvailable()) return;
     const TP = getTrackPlayer();
     try {
-      if (typeof TP.setMediaItems !== "function" || songs.length === 0) return;
+      await ensurePlayerSetup();
+      if (typeof TP.add !== "function" || songs.length === 0) return;
 
       const wasPlaying = usePlayerStore.getState().isPlaying;
-      const pos = readPosition(TP);
+      const pos = await readPosition(TP);
 
-      await TP.setMediaItems(toMediaItems(songs), nextIndex);
+      await TP.reset();
+      await TP.add(toMediaItems(songs));
+      await TP.skip(nextIndex);
       nativeQueueSig = queueSig(songs);
+      
       if (pos > 0 && typeof TP.seekTo === "function") await TP.seekTo(pos);
       if (wasPlaying) await TP.play();
       else if (typeof TP.pause === "function") await TP.pause();
@@ -7060,6 +7203,7 @@ export function useAudioPlayer() {
     if (!isTrackPlayerAvailable()) return;
     const TP = getTrackPlayer();
     try {
+      await ensurePlayerSetup();
       if (typeof TP.setRepeatMode === "function") {
         await TP.setRepeatMode(toNativeRepeat(nextMode));
       }
@@ -27271,7 +27415,8 @@ type TrackPlayerApi = Record<string, any>;
 let cachedPlayer: TrackPlayerApi | null = null;
 
 function loadPlayerModule(): any {
-  const mod = require("@rntp/player");
+  // ðŸ”¥ FIX: Changed from "@rntp/player" to "react-native-track-player"
+  const mod = require("react-native-track-player");
   return mod?.default ?? mod;
 }
 
@@ -27298,7 +27443,7 @@ export function getTrackPlayer(): TrackPlayerApi {
   const player = loadPlayerModule();
 
   if (!player) {
-    throw new Error("@rntp/player module is unavailable");
+    throw new Error("react-native-track-player module is unavailable");
   }
 
   cachedPlayer = player as TrackPlayerApi;
@@ -27310,24 +27455,22 @@ export function getTrackPlayerEnums(): {
   State?: Record<string, any>;
   RepeatMode?: Record<string, any>;
   Capability?: Record<string, any>;
-  PlayerCommand?: Record<string, any>;
 } {
   try {
-    const mod = require("@rntp/player");
+    // ðŸ”¥ FIX: Changed from "@rntp/player" to "react-native-track-player"
+    const mod = require("react-native-track-player");
 
     return {
       Event: mod.Event,
       State: mod.State,
       RepeatMode: mod.RepeatMode,
       Capability: mod.Capability,
-      PlayerCommand: mod.PlayerCommand,
     };
   } catch (error) {
     console.warn("[TrackPlayerSafe] Failed to load enums:", error);
     return {};
   }
 }
-
 
 ========== src\services\audioTags\tagService.ts ==========
 // src/services/audioTags/tagService.ts
@@ -28357,6 +28500,30 @@ export const KEYS = {
   KEEP_AWAKE: 'keepAwake',
   SONG_IDS: 'songIds',
 };
+
+========== src\services\playbackService.ts ==========
+// src/services/playbackService.ts
+import TrackPlayer, { Event } from 'react-native-track-player';
+
+// âœ… Use 'export default' so TypeScript is happy
+export default async function playbackService() {
+  TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
+  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
+  TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.stop());
+  TrackPlayer.addEventListener(Event.RemoteNext, () => TrackPlayer.skipToNext());
+  TrackPlayer.addEventListener(Event.RemotePrevious, () => TrackPlayer.skipToPrevious());
+  TrackPlayer.addEventListener(Event.RemoteSeek, (event) => TrackPlayer.seekTo(event.position));
+  
+  TrackPlayer.addEventListener(Event.RemoteJumpForward, async (event) => {
+    const position = await TrackPlayer.getPosition();
+    TrackPlayer.seekTo(position + event.interval);
+  });
+  
+  TrackPlayer.addEventListener(Event.RemoteJumpBackward, async (event) => {
+    const position = await TrackPlayer.getPosition();
+    TrackPlayer.seekTo(position - event.interval);
+  });
+}
 
 ========== src\store\artistStore.ts ==========
 // src/store/artistStore.ts
@@ -29690,6 +29857,17 @@ index 8759797..b819059 100644
 
 
 ========== patches\react-native-track-player+4.1.2.patch ==========
+diff --git a/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/results.bin b/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/results.bin
+new file mode 100644
+index 0000000..0d259dd
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/results.bin
+@@ -0,0 +1 @@
++o/classes
+diff --git a/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/transformed/classes/classes_dex/classes.dex b/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/transformed/classes/classes_dex/classes.dex
+new file mode 100644
+index 0000000..36951f5
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/.transforms/1202637b9b78e92aa0b21685f332394e/transformed/classes/classes_dex/classes.dex differ
 diff --git a/node_modules/react-native-track-player/android/build/generated/source/buildConfig/debug/com/doublesymmetry/trackplayer/BuildConfig.java b/node_modules/react-native-track-player/android/build/generated/source/buildConfig/debug/com/doublesymmetry/trackplayer/BuildConfig.java
 new file mode 100644
 index 0000000..7b5e7c0
@@ -29775,6 +29953,18 @@ index 0000000..1211b1e
 +minCompileSdkExtension=0
 +minAndroidGradlePluginVersion=1.0.0
 +coreLibraryDesugaringEnabled=false
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json b/node_modules/react-native-track-player/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json
+new file mode 100644
+index 0000000..9e26dfe
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/build/intermediates/annotation_processor_list/debug/javaPreCompileDebug/annotationProcessors.json
+@@ -0,0 +1 @@
++{}
+\ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar b/node_modules/react-native-track-player/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar
+new file mode 100644
+index 0000000..1f3db33
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar differ
 diff --git a/node_modules/react-native-track-player/android/build/intermediates/compile_r_class_jar/debug/generateDebugRFile/R.jar b/node_modules/react-native-track-player/android/build/intermediates/compile_r_class_jar/debug/generateDebugRFile/R.jar
 new file mode 100644
 index 0000000..42d3912
@@ -29827,6 +30017,41 @@ index 0000000..d2b570e
 +<?xml version="1.0" encoding="utf-8"?>
 +<merger version="3"><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="main" generated-set="main$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\res"><file name="forward" path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\res\drawable\forward.xml" qualifiers="" type="drawable"/><file name="rewind" path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\res\drawable\rewind.xml" qualifiers="" type="drawable"/><file path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\res\values\strings.xml" qualifiers=""><string name="rntp_temporary_channel_id">rntp_temporary_channel</string><string name="rntp_temporary_channel_name">temporary_channel</string></file></source></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="debug$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\debug\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="debug" generated-set="debug$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\debug\res"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated$Generated" generated="true" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\build\generated\res\resValues\debug"/></dataSet><dataSet aapt-namespace="http://schemas.android.com/apk/res-auto" config="generated" generated-set="generated$Generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\AppleLocal\apple\node_modules\react-native-track-player\android\build\generated\res\resValues\debug"/></dataSet><mergedItems/></merger>
 \ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugAssets/merger.xml b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugAssets/merger.xml
+new file mode 100644
+index 0000000..11f133a
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugAssets/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\main\assets"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\debug\assets"/></dataSet><dataSet config="generated" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\build\intermediates\shader_assets\debug\compileDebugShaders\out"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml
+new file mode 100644
+index 0000000..e408df1
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugJniLibFolders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\main\jniLibs"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\debug\jniLibs"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugShaders/merger.xml b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugShaders/merger.xml
+new file mode 100644
+index 0000000..edd6f68
+--- /dev/null
++++ b/node_modules/react-native-track-player/android/build/intermediates/incremental/mergeDebugShaders/merger.xml
+@@ -0,0 +1,2 @@
++<?xml version="1.0" encoding="utf-8"?>
++<merger version="3"><dataSet config="main" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\main\shaders"/></dataSet><dataSet config="debug" ignore_pattern="!.svn:!.git:!.ds_store:!*.scc:.*:&lt;dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~"><source path="E:\Music\node_modules\react-native-track-player\android\src\debug\shaders"/></dataSet></merger>
+\ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/java_res/debug/processDebugJavaRes/out/META-INF/react-native-track-player_debug.kotlin_module b/node_modules/react-native-track-player/android/build/intermediates/java_res/debug/processDebugJavaRes/out/META-INF/react-native-track-player_debug.kotlin_module
+new file mode 100644
+index 0000000..8539fc3
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/intermediates/java_res/debug/processDebugJavaRes/out/META-INF/react-native-track-player_debug.kotlin_module differ
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/com/doublesymmetry/trackplayer/BuildConfig.class b/node_modules/react-native-track-player/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/com/doublesymmetry/trackplayer/BuildConfig.class
+new file mode 100644
+index 0000000..8caddf0
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/com/doublesymmetry/trackplayer/BuildConfig.class differ
 diff --git a/node_modules/react-native-track-player/android/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt b/node_modules/react-native-track-player/android/build/intermediates/local_only_symbol_list/debug/parseDebugLocalResources/R-def.txt
 new file mode 100644
 index 0000000..3655221
@@ -29967,6 +30192,10 @@ index 0000000..80a694d
 +    <string name="rntp_temporary_channel_name">temporary_channel</string>
 +</resources>
 \ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar b/node_modules/react-native-track-player/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar
+new file mode 100644
+index 0000000..f025b63
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar differ
 diff --git a/node_modules/react-native-track-player/android/build/intermediates/symbol_list_with_package_name/debug/generateDebugRFile/package-aware-r.txt b/node_modules/react-native-track-player/android/build/intermediates/symbol_list_with_package_name/debug/generateDebugRFile/package-aware-r.txt
 new file mode 100644
 index 0000000..d16dca5
@@ -29980,31 +30209,31 @@ index 0000000..d16dca5
 +string rntp_temporary_channel_name
 diff --git a/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/cacheable/dirty-sources.txt b/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/cacheable/dirty-sources.txt
 new file mode 100644
-index 0000000..fe63c40
+index 0000000..0a258c8
 --- /dev/null
 +++ b/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/cacheable/dirty-sources.txt
 @@ -0,0 +1,17 @@
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\TrackAudioItem.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\RejectionException.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\module\MusicModule.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\AudioPlayerStateExt.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\module\MusicEvents.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\EnumExtensions.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\AppForegroundTracker.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\TrackPlayer.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\State.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\TrackMetadata.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\PlaybackMetadata.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\NumberExt.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\MetadataAdapter.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\service\MusicService.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\NowPlayingMetadata.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\Track.kt
-+E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\BundleUtils.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\NowPlayingMetadata.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\TrackAudioItem.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\TrackMetadata.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\TrackPlayer.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\State.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\RejectionException.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\PlaybackMetadata.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\MetadataAdapter.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\AppForegroundTracker.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\NumberExt.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\service\MusicService.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\module\MusicModule.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\AudioPlayerStateExt.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\utils\BundleUtils.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\extensions\EnumExtensions.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\model\Track.kt
++E:\Music\node_modules\react-native-track-player\android\src\main\java\com\doublesymmetry\trackplayer\module\MusicEvents.kt
 \ No newline at end of file
 diff --git a/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/local-state/build-history.bin b/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/local-state/build-history.bin
 new file mode 100644
-index 0000000..d6d8fb1
+index 0000000..b019ae3
 Binary files /dev/null and b/node_modules/react-native-track-player/android/build/kotlin/compileDebugKotlin/local-state/build-history.bin differ
 diff --git a/node_modules/react-native-track-player/android/build/outputs/logs/manifest-merger-debug-report.txt b/node_modules/react-native-track-player/android/build/outputs/logs/manifest-merger-debug-report.txt
 new file mode 100644
@@ -30059,11 +30288,564 @@ index 0000000..74d4355
 +		INJECTED from E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\AndroidManifest.xml
 +	android:minSdkVersion
 +		INJECTED from E:\AppleLocal\apple\node_modules\react-native-track-player\android\src\main\AndroidManifest.xml
+diff --git a/node_modules/react-native-track-player/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin b/node_modules/react-native-track-player/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin
+new file mode 100644
+index 0000000..eb5ed37
+Binary files /dev/null and b/node_modules/react-native-track-player/android/build/tmp/compileDebugJavaWithJavac/previous-compilation-data.bin differ
 diff --git a/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/module/MusicModule.kt b/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/module/MusicModule.kt
-index b2409a0..90df659 100644
+index b2409a0..a09bffd 100644
 --- a/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/module/MusicModule.kt
 +++ b/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/module/MusicModule.kt
-@@ -541,15 +541,24 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+@@ -169,7 +169,6 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+             return
+         }
+ 
+-        // prevent crash Fatal Exception: android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && AppForegroundTracker.backgrounded) {
+             promise.reject(
+                 "android_cannot_setup_player_in_background",
+@@ -178,7 +177,6 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+             return
+         }
+ 
+-        // Validate buffer keys.
+         val bundledData = Arguments.toBundle(data)
+         val minBuffer =
+             bundledData?.getDouble(MusicService.MIN_BUFFER_KEY)?.toMilliseconds()?.toInt()
+@@ -194,41 +192,25 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+                 ?: DEFAULT_BACK_BUFFER_DURATION_MS
+ 
+         if (playBuffer < 0) {
+-            promise.reject(
+-                "play_buffer_error",
+-                "The value for playBuffer should be greater than or equal to zero."
+-            )
++            promise.reject("play_buffer_error", "The value for playBuffer should be greater than or equal to zero.")
+             return
+         }
+-
+         if (backBuffer < 0) {
+-            promise.reject(
+-                "back_buffer_error",
+-                "The value for backBuffer should be greater than or equal to zero."
+-            )
++            promise.reject("back_buffer_error", "The value for backBuffer should be greater than or equal to zero.")
+             return
+         }
+-
+         if (minBuffer < playBuffer) {
+-            promise.reject(
+-                "min_buffer_error",
+-                "The value for minBuffer should be greater than or equal to playBuffer."
+-            )
++            promise.reject("min_buffer_error", "The value for minBuffer should be greater than or equal to playBuffer.")
+             return
+         }
+-
+         if (maxBuffer < minBuffer) {
+-            promise.reject(
+-                "min_buffer_error",
+-                "The value for maxBuffer should be greater than or equal to minBuffer."
+-            )
++            promise.reject("min_buffer_error", "The value for maxBuffer should be greater than or equal to minBuffer.")
+             return
+         }
+ 
+         playerSetUpPromise = promise
+         playerOptions = bundledData
+ 
+-
+         LocalBroadcastManager.getInstance(context).registerReceiver(
+             MusicEvents(context),
+             IntentFilter(EVENT_INTENT)
+@@ -251,90 +233,89 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+     }
+ 
+     @ReactMethod
+-    fun updateOptions(data: ReadableMap?, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        val options = Arguments.toBundle(data)
+-
+-        options?.let {
+-            musicService.updateOptions(it)
++    fun updateOptions(data: ReadableMap?, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            val options = Arguments.toBundle(data)
++            options?.let {
++                musicService.updateOptions(it)
++            }
++            callback.resolve(null)
+         }
+-
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun add(data: ReadableArray?, insertBeforeIndex: Int, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        try {
+-            val tracks = readableArrayToTrackList(data);
+-            if (insertBeforeIndex < -1 || insertBeforeIndex > musicService.tracks.size) {
+-                callback.reject("index_out_of_bounds", "The track index is out of bounds")
+-                return@launch
++    fun add(data: ReadableArray?, insertBeforeIndex: Int, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            try {
++                val tracks = readableArrayToTrackList(data);
++                if (insertBeforeIndex < -1 || insertBeforeIndex > musicService.tracks.size) {
++                    callback.reject("index_out_of_bounds", "The track index is out of bounds")
++                    return@launch
++                }
++                val index = if (insertBeforeIndex == -1) musicService.tracks.size else insertBeforeIndex
++                musicService.add(tracks, index)
++                callback.resolve(index)
++            } catch (exception: Exception) {
++                rejectWithException(callback, exception)
+             }
+-            val index = if (insertBeforeIndex == -1) musicService.tracks.size else insertBeforeIndex
+-            musicService.add(
+-                tracks,
+-                index
+-            )
+-            callback.resolve(index)
+-        } catch (exception: Exception) {
+-            rejectWithException(callback, exception)
+         }
+     }
+ 
+     @ReactMethod
+-    fun load(data: ReadableMap?, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        if (data == null) {
+-            callback.resolve(null)
+-            return@launch
+-        }
+-        val bundle = Arguments.toBundle(data);
+-        if (bundle is Bundle) {
+-            musicService.load(bundleToTrack(bundle))
+-            callback.resolve(null)
+-        } else {
+-            callback.reject("invalid_track_object", "Track was not a dictionary type")
++    fun load(data: ReadableMap?, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            if (data == null) {
++                callback.resolve(null)
++                return@launch
++            }
++            val bundle = Arguments.toBundle(data);
++            if (bundle is Bundle) {
++                musicService.load(bundleToTrack(bundle))
++                callback.resolve(null)
++            } else {
++                callback.reject("invalid_track_object", "Track was not a dictionary type")
++            }
+         }
+     }
+ 
+     @ReactMethod
+-    fun move(fromIndex: Int, toIndex: Int, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        musicService.move(fromIndex, toIndex)
+-        callback.resolve(null)
++    fun move(fromIndex: Int, toIndex: Int, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.move(fromIndex, toIndex)
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun remove(data: ReadableArray?, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        val inputIndexes = Arguments.toList(data)
+-        if (inputIndexes != null) {
+-            val size = musicService.tracks.size
+-            val indexes: ArrayList<Int> = ArrayList();
+-            for (inputIndex in inputIndexes) {
+-                val index = if (inputIndex is Int) inputIndex else inputIndex.toString().toInt()
+-                if (index < 0 || index >= size) {
+-                    callback.reject(
+-                        "index_out_of_bounds",
+-                        "One or more indexes was out of bounds"
+-                    )
+-                    return@launch
++    fun remove(data: ReadableArray?, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            val inputIndexes = Arguments.toList(data)
++            if (inputIndexes != null) {
++                val size = musicService.tracks.size
++                val indexes: ArrayList<Int> = ArrayList();
++                for (inputIndex in inputIndexes) {
++                    val index = if (inputIndex is Int) inputIndex else inputIndex.toString().toInt()
++                    if (index < 0 || index >= size) {
++                        callback.reject("index_out_of_bounds", "One or more indexes was out of bounds")
++                        return@launch
++                    }
++                    indexes.add(index)
+                 }
+-                indexes.add(index)
++                musicService.remove(indexes)
+             }
+-            musicService.remove(indexes)
++            callback.resolve(null)
+         }
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun updateMetadataForTrack(index: Int, map: ReadableMap?, callback: Promise) =
++    fun updateMetadataForTrack(index: Int, map: ReadableMap?, callback: Promise) {
+         scope.launch {
+             if (verifyServiceBoundOrReject(callback)) return@launch
+-
+             if (index < 0 || index >= musicService.tracks.size) {
+                 callback.reject("index_out_of_bounds", "The index is out of bounds")
+             } else {
+@@ -342,288 +323,330 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+                 val track = musicService.tracks[index]
+                 track.setMetadata(context, Arguments.toBundle(map), musicService.ratingType)
+                 musicService.updateMetadataForTrack(index, track)
+-
+                 callback.resolve(null)
+             }
+         }
++    }
+ 
+     @ReactMethod
+-    fun updateNowPlayingMetadata(map: ReadableMap?, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        if (musicService.tracks.isEmpty())
+-            callback.reject("no_current_item", "There is no current item in the player")
++    fun updateNowPlayingMetadata(map: ReadableMap?, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            if (musicService.tracks.isEmpty())
++                callback.reject("no_current_item", "There is no current item in the player")
+ 
+-        val context: ReactContext = context
+-        Arguments.toBundle(map)?.let {
+-            val track = bundleToTrack(it)
+-            musicService.updateNowPlayingMetadata(track)
++            val context: ReactContext = context
++            Arguments.toBundle(map)?.let {
++                val track = bundleToTrack(it)
++                musicService.updateNowPlayingMetadata(track)
++            }
++            callback.resolve(null)
+         }
+-
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun clearNowPlayingMetadata(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        if (musicService.tracks.isEmpty())
+-            callback.reject("no_current_item", "There is no current item in the player")
+-
+-        musicService.clearNotificationMetadata()
+-        callback.resolve(null)
++    fun clearNowPlayingMetadata(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            if (musicService.tracks.isEmpty())
++                callback.reject("no_current_item", "There is no current item in the player")
++            musicService.clearNotificationMetadata()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun removeUpcomingTracks(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.removeUpcomingTracks()
+-        callback.resolve(null)
++    fun removeUpcomingTracks(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.removeUpcomingTracks()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun skip(index: Int, initialTime: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.skip(index)
+-
+-        if (initialTime >= 0) {
+-            musicService.seekTo(initialTime)
++    fun skip(index: Int, initialTime: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.skip(index)
++            if (initialTime >= 0) {
++                musicService.seekTo(initialTime)
++            }
++            callback.resolve(null)
+         }
+-
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun skipToNext(initialTime: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.skipToNext()
+-
+-        if (initialTime >= 0) {
+-            musicService.seekTo(initialTime)
++    fun skipToNext(initialTime: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.skipToNext()
++            if (initialTime >= 0) {
++                musicService.seekTo(initialTime)
++            }
++            callback.resolve(null)
+         }
+-
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun skipToPrevious(initialTime: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.skipToPrevious()
+-
+-        if (initialTime >= 0) {
+-            musicService.seekTo(initialTime)
++    fun skipToPrevious(initialTime: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.skipToPrevious()
++            if (initialTime >= 0) {
++                musicService.seekTo(initialTime)
++            }
++            callback.resolve(null)
+         }
+-
+-        callback.resolve(null)
+     }
+ 
+     @ReactMethod
+-    fun reset(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.stop()
+-        delay(300) // Allow playback to stop
+-        musicService.clear()
+-
+-        callback.resolve(null)
++    fun reset(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.stop()
++            delay(300)
++            musicService.clear()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun play(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.play()
+-        callback.resolve(null)
++    fun play(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.play()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun pause(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.pause()
+-        callback.resolve(null)
++    fun pause(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.pause()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun stop(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.stop()
+-        callback.resolve(null)
++    fun stop(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.stop()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun seekTo(seconds: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.seekTo(seconds)
+-        callback.resolve(null)
++    fun seekTo(seconds: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.seekTo(seconds)
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun seekBy(offset: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.seekBy(offset)
+-        callback.resolve(null)
++    fun seekBy(offset: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.seekBy(offset)
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun retry(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.retry()
+-        callback.resolve(null)
++    fun retry(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.retry()
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun setVolume(volume: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.setVolume(volume)
+-        callback.resolve(null)
++    fun setVolume(volume: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.setVolume(volume)
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun getVolume(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getVolume())
++    fun getVolume(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getVolume())
++        }
+     }
+ 
+     @ReactMethod
+-    fun setRate(rate: Float, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.setRate(rate)
+-        callback.resolve(null)
++    fun setRate(rate: Float, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.setRate(rate)
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun getRate(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getRate())
++    fun getRate(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getRate())
++        }
+     }
+ 
+     @ReactMethod
+-    fun setRepeatMode(mode: Int, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.setRepeatMode(RepeatMode.fromOrdinal(mode))
+-        callback.resolve(null)
++    fun setRepeatMode(mode: Int, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.setRepeatMode(RepeatMode.fromOrdinal(mode))
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun getRepeatMode(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getRepeatMode().ordinal)
++    fun getRepeatMode(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getRepeatMode().ordinal)
++        }
+     }
+ 
+     @ReactMethod
+-    fun setPlayWhenReady(playWhenReady: Boolean, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        musicService.playWhenReady = playWhenReady
+-        callback.resolve(null)
++    fun setPlayWhenReady(playWhenReady: Boolean, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            musicService.playWhenReady = playWhenReady
++            callback.resolve(null)
++        }
+     }
+ 
+     @ReactMethod
+-    fun getPlayWhenReady(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.playWhenReady)
++    fun getPlayWhenReady(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.playWhenReady)
++        }
      }
  
      @ReactMethod
@@ -30072,28 +30854,73 @@ index b2409a0..90df659 100644
 -
 -        if (index >= 0 && index < musicService.tracks.size) {
 -            callback.resolve(Arguments.fromBundle(musicService.tracks[index].originalItem))
-+fun getTrack(index: Int, callback: Promise) = scope.launch {
-+    if (verifyServiceBoundOrReject(callback) == true) return@launch
-+    val service = musicService
-+    if (service == null) {
-+        callback.resolve(null)
-+        return@launch
-+    }
-+    if (index >= 0 && index < service.tracks.size) {
-+        val item = service.tracks[index].originalItem
-+        if (item != null) {
-+            callback.resolve(Arguments.fromBundle(item))
-         } else {
-             callback.resolve(null)
+-        } else {
+-            callback.resolve(null)
++    fun getTrack(index: Int, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            val service = musicService
++            if (index >= 0 && index < service.tracks.size) {
++                val item = service.tracks[index].originalItem
++                if (item != null) {
++                    callback.resolve(Arguments.fromBundle(item))
++                } else {
++                    callback.resolve(null)
++                }
++            } else {
++                callback.resolve(null)
++            }
          }
-+    } else {
-+        callback.resolve(null)
      }
-+}
  
      @ReactMethod
-     fun getQueue(callback: Promise) = scope.launch {
-@@ -580,15 +589,29 @@ class MusicModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
+-    fun getQueue(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(Arguments.fromList(musicService.tracks.map { it.originalItem }))
++    fun getQueue(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(Arguments.fromList(musicService.tracks.map { it.originalItem }))
++        }
+     }
+ 
+     @ReactMethod
+-    fun setQueue(data: ReadableArray?, callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        try {
+-            musicService.clear()
+-            musicService.add(readableArrayToTrackList(data))
+-            callback.resolve(null)
+-        } catch (exception: Exception) {
+-            rejectWithException(callback, exception)
++    fun setQueue(data: ReadableArray?, callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            try {
++                musicService.clear()
++                musicService.add(readableArrayToTrackList(data))
++                callback.resolve(null)
++            } catch (exception: Exception) {
++                rejectWithException(callback, exception)
++            }
+         }
+     }
+ 
+     @ReactMethod
+-    fun getActiveTrackIndex(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        callback.resolve(
+-            if (musicService.tracks.isEmpty()) null else musicService.getCurrentTrackIndex()
+-        )
++    fun getActiveTrackIndex(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(
++                if (musicService.tracks.isEmpty()) null else musicService.getCurrentTrackIndex()
++            )
++        }
      }
  
      @ReactMethod
@@ -30105,30 +30932,138 @@ index b2409a0..90df659 100644
 -                musicService.tracks[musicService.getCurrentTrackIndex()].originalItem
 -            )
 -        )
-+fun getActiveTrack(callback: Promise) = scope.launch {
-+    if (verifyServiceBoundOrReject(callback) == true) return@launch
-+    val service = musicService
-+    if (service == null) {
-+        callback.resolve(null)
-+        return@launch
++    fun getActiveTrack(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            val service = musicService
++            if (service.tracks.isEmpty()) {
++                callback.resolve(null)
++                return@launch
++            }
++            val index = service.getCurrentTrackIndex()
++            if (index < 0 || index >= service.tracks.size) {
++                callback.resolve(null)
++                return@launch
++            }
++            val item = service.tracks[index].originalItem
++            if (item != null) {
++                callback.resolve(Arguments.fromBundle(item))
++            } else {
++                callback.resolve(null)
++            }
++        }
      }
-+    if (service.tracks.isEmpty()) {
-+        callback.resolve(null)
-+        return@launch
-+    }
-+    val index = service.getCurrentTrackIndex()
-+    if (index < 0 || index >= service.tracks.size) {
-+        callback.resolve(null)
-+        return@launch
-+    }
-+    val item = service.tracks[index].originalItem
-+    if (item != null) {
-+        callback.resolve(Arguments.fromBundle(item))
-+    } else {
-+        callback.resolve(null)
-+    }
-+}
  
      @ReactMethod
-     fun getDuration(callback: Promise) = scope.launch {
+-    fun getDuration(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getDurationInSeconds())
++    fun getDuration(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getDurationInSeconds())
++        }
+     }
+ 
+     @ReactMethod
+-    fun getBufferedPosition(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getBufferedPositionInSeconds())
++    fun getBufferedPosition(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getBufferedPositionInSeconds())
++        }
+     }
+ 
+     @ReactMethod
+-    fun getPosition(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-
+-        callback.resolve(musicService.getPositionInSeconds())
++    fun getPosition(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(musicService.getPositionInSeconds())
++        }
+     }
+ 
+     @ReactMethod
+-    fun getProgress(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        var bundle = Bundle()
+-        bundle.putDouble("duration", musicService.getDurationInSeconds());
+-        bundle.putDouble("position", musicService.getPositionInSeconds());
+-        bundle.putDouble("buffered", musicService.getBufferedPositionInSeconds());
+-        callback.resolve(Arguments.fromBundle(bundle))
++    fun getProgress(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            var bundle = Bundle()
++            bundle.putDouble("duration", musicService.getDurationInSeconds());
++            bundle.putDouble("position", musicService.getPositionInSeconds());
++            bundle.putDouble("buffered", musicService.getBufferedPositionInSeconds());
++            callback.resolve(Arguments.fromBundle(bundle))
++        }
+     }
+ 
+     @ReactMethod
+-    fun getPlaybackState(callback: Promise) = scope.launch {
+-        if (verifyServiceBoundOrReject(callback)) return@launch
+-        callback.resolve(Arguments.fromBundle(musicService.getPlayerStateBundle(musicService.state)))
++    fun getPlaybackState(callback: Promise) {
++        scope.launch {
++            if (verifyServiceBoundOrReject(callback)) return@launch
++            callback.resolve(Arguments.fromBundle(musicService.getPlayerStateBundle(musicService.state)))
++        }
+     }
+ }
+\ No newline at end of file
+diff --git a/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/service/MusicService.kt b/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/service/MusicService.kt
+index afa6b0f..6fe8e0d 100644
+--- a/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/service/MusicService.kt
++++ b/node_modules/react-native-track-player/android/src/main/java/com/doublesymmetry/trackplayer/service/MusicService.kt
+@@ -30,7 +30,9 @@ import com.doublesymmetry.trackplayer.module.MusicEvents.Companion.METADATA_PAYL
+ import com.doublesymmetry.trackplayer.utils.BundleUtils
+ import com.doublesymmetry.trackplayer.utils.BundleUtils.setRating
+ import com.facebook.react.HeadlessJsTaskService
++import com.facebook.react.ReactApplication
+ import com.facebook.react.bridge.Arguments
++import com.facebook.react.bridge.ReactContext
+ import com.facebook.react.jstasks.HeadlessJsTaskConfig
+ import com.facebook.react.modules.core.DeviceEventManagerModule
+ import com.google.android.exoplayer2.ui.R as ExoPlayerR
+@@ -739,9 +741,20 @@ class MusicService : HeadlessJsTaskService() {
+         return bundle
+     }
+ 
++    /**
++     * ðŸ”¥ FIX: Compat helper using reactNativeHost which works on both architectures
++     */
++    private fun currentReactContextCompat(): ReactContext? {
++        return try {
++            (application as ReactApplication).reactNativeHost.reactInstanceManager.currentReactContext
++        } catch (e: Throwable) {
++            null
++        }
++    }
++
+     @MainThread
+     private fun emit(event: String, data: Bundle? = null) {
+-        reactNativeHost.reactInstanceManager.currentReactContext
++        currentReactContextCompat()
+             ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+             ?.emit(event, data?.let { Arguments.fromBundle(it) })
+     }
+@@ -751,7 +764,7 @@ class MusicService : HeadlessJsTaskService() {
+         val payload = Arguments.createArray()
+         data.forEach { payload.pushMap(Arguments.fromBundle(it)) }
+ 
+-        reactNativeHost.reactInstanceManager.currentReactContext
++        currentReactContextCompat()
+             ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+             ?.emit(event, payload)
+     }
 
