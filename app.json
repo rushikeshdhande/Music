@@ -1,0 +1,130 @@
+{
+  "expo": {
+    "name": "Music",
+    "slug": "local-music-video-player",
+    "version": "1.0.7",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/images/applogo-icon.png",
+    "android": {
+      "package": "com.netease.cloudmusic",
+      "versionCode": 9,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/applogo-adaptive.png",
+        "backgroundColor": "#000000"
+      },
+      "permissions": [
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.WAKE_LOCK",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "rushicdhande.vercel.app",
+              "pathPrefix": "/video"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.localmedia.player",
+      "icon": "./assets/images/applogo-icon.png",
+      "supportsTablet": true,
+      "buildNumber": "7",
+      "associatedDomains": [
+        "applinks:rushicdhande.vercel.app"
+      ],
+      "infoPlist": {
+        "NSSupportsLiveActivities": true,
+        "NSSupportsLiveActivitiesFrequentUpdates": true,
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
+    },
+    "plugins": [
+      "expo-updates",
+      "expo-media-library",
+      "expo-notifications",
+      [
+        "expo-widgets",
+        {
+          "useLiveActivities": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildArchs": [
+              "arm64-v8a"
+            ],
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableProguardInReleaseBuilds": true,
+            "extraProguardRules": "-keep class expo.modules.** { *; }\n-keep class com.facebook.react.** { *; }\n-keep class com.swmansion.reanimated.** { *; }\n-keep class com.swmansion.gesturehandler.** { *; }\n-keep class com.doublesymmetry.trackplayer.** { *; }\n-keep class com.reactnative.** { *; }\n-dontwarn okhttp3.**\n-dontwarn okio.**\n-dontwarn javax.annotation.**\n-dontwarn kotlinx.**"
+          }
+        }
+      ],
+      "expo-asset",
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to set a playlist cover.",
+          "cameraPermission": "Allow $(PRODUCT_NAME) to use your camera to set a playlist cover."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splashscreenicon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#000000",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
+      "expo-font",
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5779159b-e86f-4729-b8fc-8231c0cdf612"
+      },
+      "portfolioUrl": "https://rushicdhande.vercel.app/"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/5779159b-e86f-4729-b8fc-8231c0cdf612",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
+    }
+  }
+}

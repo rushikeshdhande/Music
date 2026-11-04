@@ -1,0 +1,91 @@
+:root {
+    color-scheme: dark;
+
+    /* Backgrounds — Soft Charcoal Dark */
+    --background: #1A1919;
+    --surface: #222121;
+    --surface-elevated: #2A2929;
+    --surface-highest: #333232;
+    --selected: #3A2024;
+
+    /* Text */
+    --text: #F5F5F7;
+    --text-secondary: #B8B5B7;
+    --text-tertiary: #929092;
+    --text-disabled: #696769;
+
+    /* Icons and borders */
+    --icon: #F5F5F7;
+    --icon-secondary: #B0ADB0;
+    --icon-disabled: #696769;
+    --border: #3A3838;
+    --divider: #302E2E;
+
+    /* Effects */
+    --overlay: #CC000000;
+    --glass-tint: #26FFFFFF;
+    --glass-border: rgb(255 255 255 / 10%);
+    --glass-blur: 24px;
+
+    /* Components */
+    --tab-bar: #1D1C1C;
+    --mini-player: #272525;
+    --player-background: #1A1919;
+    --modal: #272525;
+    --input: #2A2929;
+
+    /* Media */
+    --progress: #D60017;
+    --progress-track: #494646;
+    --waveform: #FF3348;
+    --artwork-placeholder: #302E2E;
+    --video-overlay: #CC000000;
+    --favorite: #fe172e;
+}
+
+.light-theme {
+    color-scheme: light;
+
+    /* Backgrounds — Soft Light */
+    --background: #F5F5F7;
+    --surface: #FFFFFF;
+    --surface-elevated: #FFFFFF;
+    --surface-highest: #E8E8ED;
+    --selected: #FCE7EA;
+
+    /* Text */
+    --text: #151518;
+    --text-secondary: #666670;
+    --text-tertiary: #85858F;
+    --text-disabled: #B0B0B8;
+
+    /* Icons and borders */
+    --icon: #151518;
+    --icon-secondary: #777781;
+    --icon-disabled: #B0B0B8;
+    --border: #E2E2E7;
+    --divider: #EBEBEF;
+
+    /* Effects */
+    --overlay: #66000000;
+    --glass-tint: #80FFFFFF;
+    --glass-border: rgb(0 0 0 / 8%);
+
+    /* Components */
+    --tab-bar: #FFFFFF;
+    --mini-player: #FFFFFF;
+    --player-background: #F5F5F7;
+    --modal: #FFFFFF;
+    --input: #FFFFFF;
+
+    /* Media */
+    --progress: #D60017;
+    --progress-track: #DEDEE3;
+    --waveform: #FF3348;
+    --artwork-placeholder: #E8E8ED;
+    --video-overlay: #CC000000;
+    --favorite: #FF3348;
+
+    /* Shadows */
+    --shadow-card: 0 8px 30px rgb(0 0 0 / 8%);
+}

@@ -1,0 +1,10 @@
+node_modules
+
+.expo/
+/ios
+dist/
+.expo/
+node_modules/
+# .gitignore
+android/
+ios/
