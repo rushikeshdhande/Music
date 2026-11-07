@@ -15,24 +15,25 @@ import {
   Modal,
   Pressable,
   ScrollView,
-  FlatList,
   Animated,
   Share,
+  Easing,
+  Platform,
 } from "react-native";
-import {
-  SafeAreaView,
-  useSafeAreaInsets,
-} from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
 import Svg, { Path } from "react-native-svg";
 import { getColors } from "react-native-image-colors";
+import { BlurView, BlurTargetView } from "expo-blur";
 
+// ── Components ────────────────────────────────────────────────
 import { GlassIconBtn } from "../components/LibraryPageHeaders";
-import MiniPlayer from "../components/MiniPlayer";
+import { GlassBG } from "../components/GlassCard";
 import { ScreenLoader } from "../components/Loader";
 
+// ── Hooks + store ─────────────────────────────────────────────
 import { useTheme } from "../hooks/useTheme";
 import { useMediaStore } from "../store/mediaStore";
 import { usePlayerStore } from "../store/playerStore";
@@ -45,7 +46,6 @@ import {
   PinSongIcon,
   SkipNextIcon,
 } from "../icons/Icons";
-
 import {
   getCachedTags,
   getCachedArtwork,
@@ -76,8 +76,22 @@ const MAX_TAG_WAIT_MS = 3000;
 const HEADER_SCROLL_DISTANCE = 180;
 const HEADER_CONTENT_H = 44;
 
-// Custom Share Icon
-const ShareSvg = ({ color = "#fff", size = 18 }) => (
+const BG_COLOR_STRENGTH = 0.65;
+const COLOR_FALLBACK = "#141416";
+
+const IS_ANDROID = Platform.OS === "android";
+
+// Popup width — reduced from 200 → 160 for a tighter look
+const POPUP_WIDTH = 160;
+const HAIRLINE = StyleSheet.hairlineWidth; // 0.5 on @2x, 0.33 on @3x, 1 on mdpi
+
+const ShareSvg = ({
+  color = "#fff",
+  size = 18,
+}: {
+  color?: string;
+  size?: number;
+}) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
     <Path
       d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"
@@ -86,7 +100,6 @@ const ShareSvg = ({ color = "#fff", size = 18 }) => (
   </Svg>
 );
 
-// ── Color Utils ──────────────────────────────────────────────────────
 const hexToRgb = (hex: string): [number, number, number] | null => {
   let h = (hex || "").trim().replace(/^#/, "");
   if (h.length === 3)
@@ -113,9 +126,23 @@ const mixHex = (fg: string, bg: string, a: number): string => {
   return `#${m(0)}${m(1)}${m(2)}`;
 };
 
+const darkenIfBright = (hex: string, maxBrightness = 140): string => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const [r, g, b] = rgb;
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  if (brightness <= maxBrightness) return hex;
+  const f = maxBrightness / brightness;
+  const to = (n: number) =>
+    Math.round(n * f)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
+};
+
 const cleanName = (raw?: string | null, fallback = ""): string => {
   if (!raw) return fallback;
-  let s = String(raw)
+  const s = String(raw)
     .replace(/[\(\[\{<][^\)\]\}>]*[\)\]\}>]/g, " ")
     .replace(/\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi, " ")
     .replace(
@@ -158,11 +185,20 @@ const formatDurationMinutes = (totalSec: number): string => {
   return `${mins} minute${mins === 1 ? "" : "s"}`;
 };
 
+const albumKeyOf = (s: any): string => {
+  const raw =
+    getCachedTags(s.id)?.album ??
+    (typeof s.album === "string" ? s.album : undefined);
+  return cleanName(raw, UNKNOWN_ALBUM).toLowerCase();
+};
+
 export default function AlbumDetailsScreen() {
   const nav = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
   const theme = useTheme();
+
+  const blurTargetRef = useRef<View>(null);
 
   const albumName: string = route.params?.albumName ?? UNKNOWN_ALBUM;
   const routeSongIds: string[] | undefined = route.params?.songIds;
@@ -189,10 +225,8 @@ export default function AlbumDetailsScreen() {
   const [bootMinDone, setBootMinDone] = useState(false);
   const [tagsLoaded, setTagsLoaded] = useState(false);
 
-  // ✅ Full Screen Background Color State
   const [bgColor, setBgColor] = useState(theme.background);
 
-  // ✅ Sticky Header Animation
   const scrollY = useRef(new Animated.Value(0)).current;
   const headerBgOpacity = scrollY.interpolate({
     inputRange: [HEADER_SCROLL_DISTANCE, HEADER_SCROLL_DISTANCE + 50],
@@ -204,6 +238,11 @@ export default function AlbumDetailsScreen() {
     outputRange: [0, 1],
     extrapolate: "clamp",
   });
+  const blurOpacity = scrollY.interpolate({
+    inputRange: [0, 120],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
 
   const onScroll = useMemo(
     () =>
@@ -211,6 +250,58 @@ export default function AlbumDetailsScreen() {
         useNativeDriver: true,
       }),
     [scrollY],
+  );
+
+  // Popup animation (safe — no transformOrigin)
+  const menuScale = useRef(new Animated.Value(0.9)).current;
+  const menuOpacity = useRef(new Animated.Value(0)).current;
+  const menuClosing = useRef(false);
+
+  useEffect(() => {
+    if (!menuVisible) return;
+    menuClosing.current = false;
+    menuScale.setValue(0.9);
+    menuOpacity.setValue(0);
+    Animated.parallel([
+      Animated.timing(menuScale, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(menuOpacity, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [menuVisible, menuScale, menuOpacity]);
+
+  const closeMenu = useCallback(
+    (after?: () => void) => {
+      if (menuClosing.current) return;
+      menuClosing.current = true;
+      Animated.parallel([
+        Animated.timing(menuScale, {
+          toValue: 0.94,
+          duration: 140,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(menuOpacity, {
+          toValue: 0,
+          duration: 140,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        menuClosing.current = false;
+        setMenuVisible(false);
+        after?.();
+      });
+    },
+    [menuScale, menuOpacity],
   );
 
   useEffect(() => {
@@ -237,19 +328,21 @@ export default function AlbumDetailsScreen() {
   }, [artworkMap]);
 
   const albumSongs = useMemo(() => {
+    const target = cleanName(albumName, UNKNOWN_ALBUM).toLowerCase();
+    const isUnknownTarget = target === UNKNOWN_ALBUM.toLowerCase();
     let list: any[];
 
     if (routeSongIds && routeSongIds.length > 0) {
       const idSet = new Set(routeSongIds);
       list = songs.filter((s: any) => idSet.has(s.id));
+
+      if (!isUnknownTarget) {
+        list = list.filter(
+          (s: any) => !hasCachedTags(s.id) || albumKeyOf(s) === target,
+        );
+      }
     } else {
-      const target = cleanName(albumName, UNKNOWN_ALBUM).toLowerCase();
-      list = songs.filter((s: any) => {
-        const raw =
-          getCachedTags(s.id)?.album ??
-          (typeof s.album === "string" ? s.album : undefined);
-        return cleanName(raw, UNKNOWN_ALBUM).toLowerCase() === target;
-      });
+      list = songs.filter((s: any) => albumKeyOf(s) === target);
     }
 
     const sorted = [...list].sort((a: any, b: any) =>
@@ -258,7 +351,6 @@ export default function AlbumDetailsScreen() {
       }),
     );
 
-    // ✅ FIXED: Return ALL songs in the album instead of just the first one
     return sorted;
   }, [routeSongIds, songs, albumName, tagVersion]);
 
@@ -336,41 +428,62 @@ export default function AlbumDetailsScreen() {
     return undefined;
   }, [routeArtwork, albumSongs, artworkMap]);
 
-  // ✅ Extract Album Color for Full Screen Background
   useEffect(() => {
     if (!albumArtwork) {
       setBgColor(theme.background);
       return;
     }
+
+    const uri =
+      albumArtwork.startsWith("http") ||
+      albumArtwork.startsWith("file://") ||
+      albumArtwork.startsWith("content://") ||
+      albumArtwork.startsWith("data:")
+        ? albumArtwork
+        : `file://${albumArtwork}`;
+
     let isMounted = true;
-    getColors(albumArtwork, {
-      fallback: theme.background,
-      cache: false,
-      key: albumArtwork,
+
+    getColors(uri, {
+      fallback: COLOR_FALLBACK,
+      cache: true,
+      key: uri,
     })
-      .then((res: any) => {
+        .then((res: any) => {
         if (!isMounted) return;
-        
-        let picked = theme.background;
-        
+
+        let picked: string = COLOR_FALLBACK;
+
         if (res?.platform === "ios") {
-          picked = res.background || res.primary || theme.background;
+          picked = res.background || res.primary || COLOR_FALLBACK;
         } else {
-          // 🔥 Use average to get the overall tint instead of pure black
-          picked = res.average || res.vibrant || res.muted || res.dominant || theme.background;
+          picked =
+            res.darkVibrant ||
+            res.vibrant ||
+            res.dominant ||
+            res.muted ||
+            res.average ||
+            COLOR_FALLBACK;
         }
 
-        // Final fallback check
         if (picked === "#000000" || picked === "#000") {
-          picked = res.muted || res.vibrant || theme.background;
+          picked = res.muted || res.vibrant || COLOR_FALLBACK;
         }
 
-        // 🔥 0.25 ratio makes it a subtle dark tint (Image 1 style)
-        setBgColor(mixHex(picked, theme.background, 0.25));
+        // 🔥 Guard: empty / invalid colour string → fallback
+        if (!picked || typeof picked !== "string" || picked.length < 4) {
+          picked = COLOR_FALLBACK;
+        }
+
+        setBgColor(
+          mixHex(darkenIfBright(picked), COLOR_FALLBACK, BG_COLOR_STRENGTH),
+        );
       })
-      .catch(() => {
+      .catch((e) => {
+        console.log("[Album] getColors failed:", e);
         if (isMounted) setBgColor(theme.background);
       });
+
     return () => {
       isMounted = false;
     };
@@ -389,23 +502,28 @@ export default function AlbumDetailsScreen() {
     [albumSongs, withArt],
   );
 
-  // ── Fixed theme-based colours ──────────────────────────────────────
   const isDark = theme.mode === "dark";
-  const textColor = theme.text;
-  const subTextColor = theme.textSecondary;
-  const accentColor = theme.primary;
-  const lineColor = theme.border;
-  const circleBg = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.08)";
+
+  const ON_BG_TEXT = "#ffffff";
+  const ON_BG_SUB = "rgba(255,255,255,0.6)";
+  const ON_BG_DIVIDER = "rgba(255,255,255,0.16)";
+
+  const textColor = ON_BG_TEXT;
+  const subTextColor = ON_BG_SUB;
+  const accentColor = theme.iconsColour;
+  const lineColor = ON_BG_DIVIDER;
+
+  const circleBg = "rgba(255,255,255,0.15)";
 
   const headerColors = useMemo(
     () => ({
       background: bgColor,
       surface: theme.surface,
       border: theme.border,
-      text: theme.text,
-      textSecondary: theme.textSecondary,
-      textMuted: (theme as any).textMuted || theme.textSecondary,
-      primary: theme.primary,
+      text: "#ffffff",
+      textSecondary: "rgba(255,255,255,0.72)",
+      textMuted: "rgba(255,255,255,0.56)",
+      primary: "#ffffff",
     }),
     [theme, bgColor],
   );
@@ -666,9 +784,9 @@ export default function AlbumDetailsScreen() {
         onPress={() => playFrom(index)}
       >
         <View style={styles.starCol}>
-          {isFav && (
+          {isFav ? (
             <Text style={[styles.star, { color: accentColor }]}>★</Text>
-          )}
+          ) : null}
         </View>
 
         <Text style={[styles.count, { color: subTextColor }]}>{index + 1}</Text>
@@ -678,7 +796,7 @@ export default function AlbumDetailsScreen() {
             numberOfLines={1}
             style={[
               styles.songTitle,
-              { color: isCurrent ? accentColor : textColor },
+              { color: isCurrent ? "#ffffff" : textColor },
             ]}
           >
             {displayTitle(item)}
@@ -709,174 +827,317 @@ export default function AlbumDetailsScreen() {
 
   const showLoading = !bootMinDone || !tagsLoaded;
 
-  return (
-    <View style={[styles.container, { backgroundColor: bgColor }]}>
-      {/* ✅ STICKY HEADER */}
-      <View style={[styles.headerWrapper, { paddingTop: insets.top + 8 }]}>
-        <Animated.View
-          style={[
-            StyleSheet.absoluteFill,
-            { backgroundColor: bgColor, opacity: headerBgOpacity },
-          ]}
-        />
-        <View style={styles.headerContent}>
-          <GlassIconBtn
-            colors={headerColors}
-            icon={BACK_ICON}
-            iconStyle={{ width: 16, height: 16 }}
-            onPress={() => nav.goBack()}
+  const menuShadow = isDark
+    ? { color: "#000", opacity: 0.35, radius: 16, elevation: 18 }
+    : { color: "#000", opacity: 0.18, radius: 12, elevation: 8 };
+
+  // ⬇️ Frosted popup — iOS: GlassBG, Android: pre-blurred artwork + opaque tint
+  const renderPopupCard = () => {
+    const tintBg = isDark
+      ? "rgba(28, 28, 30, 0.32)" // more solid (was 0.72)
+      : "rgba(232, 232, 236, 0.07)"; // more solid (was 0.78)
+
+    if (IS_ANDROID) {
+      return (
+        <View
+          style={{
+            flex: 1,
+            borderRadius: 12,
+            overflow: "hidden",
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.12)",
+            backgroundColor: isDark
+              ? "rgba(28, 28, 30, 0.98)"
+              : "rgba(250, 250, 250, 0.99)",
+          }}
+        >
+          {albumArtwork ? (
+            <Image
+              source={{ uri: albumArtwork }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+              blurRadius={30}
+              fadeDuration={0}
+            />
+          ) : null}
+
+          <View
+            style={[StyleSheet.absoluteFill, { backgroundColor: tintBg }]}
+            pointerEvents="none"
           />
 
-          <Animated.Text
-            numberOfLines={1}
-            style={[
-              styles.headerTitle,
-              { color: textColor, opacity: headerTitleOpacity },
-            ]}
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={{ paddingVertical: 6 }}
           >
-            {displayAlbumName}
-          </Animated.Text>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => closeMenu(() => nav.navigate("Settings"))}
+            >
+              <Text style={[styles.menuText, { color: "#ffff" }]}>
+                Settings
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => closeMenu(() => nav.navigate("Account"))}
+            >
+              <Text style={[styles.menuText, { color: "#ffff" }]}>Account</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </View>
+      );
+    }
 
-          <View style={styles.headerRight}>
+    // iOS real blur
+    return (
+      <GlassBG
+        radius={12}
+        lightMode={!isDark}
+        blurTarget={blurTargetRef}
+        settings={{
+          tintOpacity: isDark ? 0.55 : 0.7,
+          frostBlur: 24,
+          distortionStrength: 45,
+        }}
+        style={{ flex: 1 }}
+      >
+        <Pressable
+          onPress={(e) => e.stopPropagation()}
+          style={{ paddingVertical: 6 }}
+        >
+          <TouchableOpacity
+            style={styles.menuRow}
+            onPress={() => closeMenu(() => nav.navigate("Settings"))}
+          >
+            <Text style={[styles.menuText, { color: theme.text }]}>
+              Settings
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuRow}
+            onPress={() => closeMenu(() => nav.navigate("Account"))}
+          >
+            <Text style={[styles.menuText, { color: theme.text }]}>
+              Account
+            </Text>
+          </TouchableOpacity>
+        </Pressable>
+      </GlassBG>
+    );
+  };
+
+  return (
+    <View style={[styles.container, { backgroundColor: bgColor }]}>
+      <BlurTargetView
+        ref={blurTargetRef}
+        style={StyleSheet.absoluteFill}
+        collapsable={false}
+      >
+        {/* ── FROSTED HEADER ── */}
+        <View style={[styles.headerWrapper, { paddingTop: insets.top + 8 }]}>
+          <View style={styles.headerContent}>
             <GlassIconBtn
               colors={headerColors}
-              icon={ShareSvg}
-              iconStyle={{ width: 18, height: 18, tintColor: theme.text }}
-              onPress={handleShareAlbum}
+              icon={BACK_ICON}
+              iconStyle={{ width: 16, height: 16 }}
+              onPress={() => nav.goBack()}
             />
-            <GlassIconBtn
-              colors={headerColors}
-              icon={MORE_ICON}
-              iconStyle={{ width: 18, height: 18, tintColor: theme.primary }}
-              onPress={() => setMenuVisible(true)}
-            />
+
+            <View style={styles.headerRight}>
+              <GlassIconBtn
+                colors={headerColors}
+                icon={ShareSvg}
+                iconStyle={{ width: 18, height: 18, tintColor: theme.text }}
+                onPress={handleShareAlbum}
+              />
+              <GlassIconBtn
+                colors={headerColors}
+                icon={MORE_ICON}
+                iconStyle={{
+                  width: 18,
+                  height: 18,
+                  tintColor: theme.iconsColour,
+                }}
+                onPress={() => setMenuVisible(true)}
+              />
+            </View>
           </View>
         </View>
-      </View>
 
-      {/* ✅ SCROLLABLE CONTENT */}
-      <Animated.FlatList
-        data={albumSongs}
-        keyExtractor={(it: any) => String(it.id)}
-        renderItem={renderSong}
-        style={{ opacity: showLoading ? 0 : 1 }}
-        pointerEvents={showLoading ? "none" : "auto"}
-        contentContainerStyle={{
-          paddingBottom: 200,
-          paddingTop: insets.top + HEADER_CONTENT_H + 20,
-        }}
-        showsVerticalScrollIndicator={false}
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-        ItemSeparatorComponent={() => (
-          <View style={[styles.sep, { backgroundColor: lineColor }]} />
-        )}
-        ListHeaderComponent={
-          <View>
-            <View style={styles.heroWrap}>
-              <Image
-                source={
-                  albumArtwork ? { uri: albumArtwork } : MUSIC_DEFAULT_PNG
-                }
-                style={styles.hero}
-                fadeDuration={0}
-              />
-            </View>
+        {/* ── SONG LIST ── */}
+        <Animated.FlatList
+          data={albumSongs}
+          keyExtractor={(it: any) => String(it.id)}
+          renderItem={renderSong}
+          style={{ opacity: showLoading ? 0 : 1 }}
+          pointerEvents={showLoading ? "none" : "auto"}
+          contentContainerStyle={{
+            paddingBottom: 200,
+            paddingTop: insets.top + HEADER_CONTENT_H + 20,
+          }}
+          showsVerticalScrollIndicator={false}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          ItemSeparatorComponent={() => (
+            <View style={[styles.sep, { backgroundColor: lineColor }]} />
+          )}
+          ListHeaderComponent={
+            <View>
+              <View style={styles.heroWrap}>
+                <Image
+                  source={
+                    albumArtwork ? { uri: albumArtwork } : MUSIC_DEFAULT_PNG
+                  }
+                  style={styles.hero}
+                  fadeDuration={0}
+                />
+                <Animated.View
+                  style={[
+                    StyleSheet.absoluteFill,
+                    {
+                      opacity: blurOpacity,
+                      borderRadius: 8,
+                      overflow: "hidden",
+                    },
+                  ]}
+                  pointerEvents="none"
+                >
+                  <BlurView
+                    intensity={50}
+                    tint="dark"
+                    style={StyleSheet.absoluteFill}
+                  />
+                </Animated.View>
+              </View>
 
-            <Text
-              style={[styles.title, { color: textColor }]}
-              numberOfLines={2}
-            >
-              {displayAlbumName}
-            </Text>
-
-            <Text
-              style={[styles.artist, { color: subTextColor }]}
-              numberOfLines={1}
-            >
-              {albumArtist}
-            </Text>
-
-            <View style={styles.metaRow}>
-              <Text style={[styles.meta, { color: subTextColor }]}>
-                {albumGenre} · {albumYear} ·{" "}
-              </Text>
-              <Image
-                source={LOSSLESS_ICON}
-                style={[styles.losslessIcon, { tintColor: subTextColor }]}
-                resizeMode="contain"
-              />
-              <Text style={[styles.meta, { color: subTextColor }]}>
-                {" "}
-                Hi-Res Lossless
-              </Text>
-            </View>
-
-            <View style={styles.controlsRow}>
-              <TouchableOpacity
-                style={[styles.circleBtn, { backgroundColor: circleBg }]}
-                onPress={handleShuffle}
-                disabled={albumSongs.length === 0}
+              <Text
+                style={[styles.title, { color: textColor }]}
+                numberOfLines={2}
               >
-                <ShuffleIcon size={20} color={textColor} />
-              </TouchableOpacity>
+                {displayAlbumName}
+              </Text>
 
-              <TouchableOpacity
-                style={[styles.playBtn, { backgroundColor: textColor }]}
-                onPress={handlePlay}
-                disabled={albumSongs.length === 0}
+              <Text
+                style={[styles.artist, { color: textColor }]}
+                numberOfLines={1}
               >
-                <PlayIcon size={22} color={theme.background} />
-                <Text style={[styles.playText, { color: theme.background }]}>
-                  Play
+                {albumArtist}
+              </Text>
+
+              <View style={styles.metaRow}>
+                <Text style={[styles.meta, { color: subTextColor }]}>
+                  {albumGenre} · {albumYear}
                 </Text>
-              </TouchableOpacity>
+                <Image
+                  source={LOSSLESS_ICON}
+                  style={[styles.losslessIcon, { tintColor: subTextColor }]}
+                  resizeMode="contain"
+                />
+                <Text style={[styles.meta, { color: subTextColor }]}>
+                  {" "}
+                  Hi-Res Lossless
+                </Text>
+              </View>
 
-              <TouchableOpacity
-                style={[styles.circleBtn, { backgroundColor: circleBg }]}
-                activeOpacity={0.7}
-                onPress={() => setMenuVisible(true)}
-              >
-                <Text style={[styles.plusText, { color: textColor }]}>+</Text>
-              </TouchableOpacity>
+              <View style={styles.controlsRow}>
+                <TouchableOpacity
+                  style={[styles.circleBtn, { backgroundColor: circleBg }]}
+                  onPress={handleShuffle}
+                  disabled={albumSongs.length === 0}
+                >
+                  <ShuffleIcon size={20} color={textColor} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.playBtn, { backgroundColor: textColor }]}
+                  onPress={handlePlay}
+                  disabled={albumSongs.length === 0}
+                >
+                  <PlayIcon size={22} color={"#000000"} />
+                  <Text
+                    style={[
+                      styles.playText,
+                      { color: "#000000", fontWeight: "700" },
+                    ]}
+                  >
+                    Play
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.circleBtn, { backgroundColor: circleBg }]}
+                  activeOpacity={0.7}
+                  onPress={() => setMenuVisible(true)}
+                >
+                  <Text style={[styles.plusText, { color: textColor }]}>+</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.divider, { backgroundColor: lineColor }]} />
             </View>
-
-            <View style={[styles.divider, { backgroundColor: lineColor }]} />
-          </View>
-        }
-        ListFooterComponent={
-          <>
-            <View style={[styles.divider, { backgroundColor: lineColor }]} />
-
-            <View style={styles.footerMeta}>
-              <Text style={[styles.footerDate, { color: textColor }]}>
-                {formattedDate}
+          }
+          ListFooterComponent={
+            <View>
+              <View style={[styles.divider, { backgroundColor: lineColor }]} />
+              <View style={styles.footerMeta}>
+                <Text style={[styles.footerDate, { color: subTextColor }]}>
+                  {formattedDate}
+                </Text>
+                <Text style={[styles.footerCount, { color: subTextColor }]}>
+                  {footerCountLine}
+                </Text>
+              </View>
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={[styles.emptyTitle, { color: textColor }]}>
+                No songs in this album
               </Text>
-              <Text style={[styles.footerCount, { color: subTextColor }]}>
-                {footerCountLine}
+              <Text style={[styles.emptyText, { color: subTextColor }]}>
+                Songs tagged with this album will appear here.
               </Text>
             </View>
-          </>
-        }
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={[styles.emptyTitle, { color: textColor }]}>
-              No songs in this album
-            </Text>
-            <Text style={[styles.emptyText, { color: subTextColor }]}>
-              Songs tagged with this album will appear here.
-            </Text>
+          }
+        />
+
+        {/* ── INLINE POPUP — Android: solid frosted, iOS: real blur ── */}
+        {menuVisible ? (
+          <View
+            pointerEvents="box-none"
+            style={[StyleSheet.absoluteFill, { zIndex: 100, elevation: 100 }]}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => closeMenu()}
+            />
+
+            <Animated.View
+              style={[
+                styles.menuCard,
+                {
+                  top: insets.top + 54,
+                  right: 10,
+                  width: POPUP_WIDTH,
+                  opacity: menuOpacity,
+                  transform: [{ scale: menuScale }],
+                  shadowColor: menuShadow.color,
+                  shadowOpacity: menuShadow.opacity,
+                  shadowRadius: menuShadow.radius,
+                  elevation: menuShadow.elevation,
+                },
+              ]}
+            >
+              {renderPopupCard()}
+            </Animated.View>
           </View>
-        }
-      />
+        ) : null}
+      </BlurTargetView>
 
       <ScreenLoader visible={showLoading} />
 
-      <View style={styles.bottomArea} pointerEvents="box-none">
-        <MiniPlayer />
-      </View>
-
-      {/* ─── Song options modal ─────────────────────────────────────── */}
+      {/* ── SONG OPTIONS MODAL ── */}
       <Modal
         visible={!!selectedSong}
         transparent
@@ -938,7 +1199,7 @@ export default function AlbumDetailsScreen() {
             />
 
             {!addToMode ? (
-              <>
+              <View>
                 <TouchableOpacity
                   style={styles.option}
                   onPress={() => {
@@ -948,7 +1209,7 @@ export default function AlbumDetailsScreen() {
                   }}
                 >
                   <View style={styles.optionRow}>
-                    <PinSongIcon size={20} color={theme.primary} />
+                    <PinSongIcon size={20} color={theme.iconsColour} />
                     <Text
                       style={[
                         styles.optionText,
@@ -966,7 +1227,10 @@ export default function AlbumDetailsScreen() {
                   <View style={styles.optionRow}>
                     <Image
                       source={CREATE_PLAYLIST_ICON}
-                      style={[styles.optionIcon, { tintColor: theme.primary }]}
+                      style={[
+                        styles.optionIcon,
+                        { tintColor: theme.iconsColour },
+                      ]}
                       resizeMode="contain"
                       fadeDuration={0}
                     />
@@ -983,7 +1247,7 @@ export default function AlbumDetailsScreen() {
 
                 <TouchableOpacity style={styles.option} onPress={playNext}>
                   <View style={styles.optionRow}>
-                    <SkipNextIcon size={20} color={theme.primary} />
+                    <SkipNextIcon size={20} color={theme.iconsColour} />
                     <Text
                       style={[
                         styles.optionText,
@@ -994,9 +1258,9 @@ export default function AlbumDetailsScreen() {
                     </Text>
                   </View>
                 </TouchableOpacity>
-              </>
+              </View>
             ) : (
-              <>
+              <View>
                 <Text
                   style={[styles.subHeader, { color: theme.textSecondary }]}
                 >
@@ -1024,7 +1288,7 @@ export default function AlbumDetailsScreen() {
                           style={[styles.optionText, { color: theme.text }]}
                           numberOfLines={1}
                         >
-                          ♪ {pl.name}
+                          {`♪ ${pl.name}`}
                         </Text>
                       </TouchableOpacity>
                     ))
@@ -1038,10 +1302,10 @@ export default function AlbumDetailsScreen() {
                   <Text
                     style={[styles.optionText, { color: theme.textSecondary }]}
                   >
-                    ← Back
+                    {"← Back"}
                   </Text>
                 </TouchableOpacity>
-              </>
+              </View>
             )}
 
             <TouchableOpacity
@@ -1058,57 +1322,6 @@ export default function AlbumDetailsScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* ─── 3-dot menu (Settings / Account) ──────────────────────────── */}
-      <Modal
-        visible={menuVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMenuVisible(false)}
-        statusBarTranslucent
-      >
-        <Pressable
-          style={styles.menuBackdrop}
-          onPress={() => setMenuVisible(false)}
-        >
-          <View
-            style={[
-              styles.menuCard,
-              {
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                top: insets.top + 54,
-                right: 10,
-              },
-            ]}
-          >
-            <Pressable onPress={(e) => e.stopPropagation()}>
-              <TouchableOpacity
-                style={styles.menuRow}
-                onPress={() => {
-                  setMenuVisible(false);
-                  nav.navigate("Settings");
-                }}
-              >
-                <Text style={[styles.menuText, { color: theme.text }]}>
-                  Settings
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.menuRow}
-                onPress={() => {
-                  setMenuVisible(false);
-                  nav.navigate("Account");
-                }}
-              >
-                <Text style={[styles.menuText, { color: theme.text }]}>
-                  Account
-                </Text>
-              </TouchableOpacity>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -1116,7 +1329,6 @@ export default function AlbumDetailsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
 
-  // ── Sticky Header ──────────────────────────────────────────────────
   headerWrapper: {
     position: "absolute",
     top: 0,
@@ -1147,17 +1359,21 @@ const styles = StyleSheet.create({
     gap: 8,
   },
 
-  // ── Hero ───────────────────────────────────────────────────────────
   heroWrap: {
-    alignItems: "center",
-    marginTop: 8,
+    alignSelf: "center",
+    position: "relative",
+    width: 220,
+    height: 220,
+    marginTop: 22,
     marginBottom: 18,
   },
   hero: {
-    width: 220,
-    height: 220,
-    borderRadius: 12,
+    width: "100%",
+    height: "100%",
+    borderRadius: 8,
     backgroundColor: "#1c1c1e",
+    borderWidth: HAIRLINE,
+    borderColor: "rgba(255, 255, 255, 0.26)", // subtle light hairline
   },
   title: {
     fontSize: 20,
@@ -1189,7 +1405,6 @@ const styles = StyleSheet.create({
     height: 16,
   },
 
-  // ── Controls ───────────────────────────────────────────────────────
   controlsRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1211,12 +1426,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     height: 48,
-    minWidth: 120,
+    minWidth: 160,
     paddingHorizontal: 28,
     borderRadius: 24,
     gap: 8,
   },
-  playText: { fontSize: 16, fontWeight: "700", fontFamily: FONT },
+  playText: { fontSize: 16, fontWeight: "500", fontFamily: "Roboto-Bold" },
   plusText: {
     fontSize: 28,
     fontWeight: "300",
@@ -1229,7 +1444,6 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
 
-  // ── Song List ──────────────────────────────────────────────────────
   songRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1275,9 +1489,13 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 8,
   },
-  footerDate: { fontSize: 13, fontWeight: "600", fontFamily: FONT },
-  footerCount: { fontSize: 12, marginTop: 4, fontFamily: FONT },
-
+  footerDate: { fontSize: 16, fontWeight: "500", fontFamily: FONT },
+  footerCount: {
+    fontSize: 15,
+    fontWeight: "500",
+    marginTop: 4,
+    fontFamily: FONT,
+  },
   empty: {
     alignItems: "center",
     paddingTop: 40,
@@ -1291,15 +1509,23 @@ const styles = StyleSheet.create({
     fontFamily: FONT,
   },
 
-  bottomArea: {
+  menuCard: {
     position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "transparent",
+    borderRadius: 12,
+    overflow: "hidden",
+    // ⚠️ NO backgroundColor, NO width here — the inner card draws those.
+    // Width is set inline via POPUP_WIDTH so it's easy to tweak.
+  },
+  menuRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  menuText: {
+    fontSize: 15,
+    fontWeight: "500",
+    fontFamily: FONT,
   },
 
-  // ── Modals / Sheets ────────────────────────────────────────────────
   modalRoot: { flex: 1, justifyContent: "flex-end" },
   backdrop: {
     position: "absolute",
@@ -1371,28 +1597,4 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   cancelText: { fontSize: 16, fontFamily: FONT },
-
-  // ── 3-dot menu ────────────────────────────────────────────────────
-  menuBackdrop: { flex: 1, backgroundColor: "transparent" },
-  menuCard: {
-    position: "absolute",
-    width: 200,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 6,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    elevation: 18,
-  },
-  menuRow: {
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-  },
-  menuText: {
-    fontSize: 15,
-    fontWeight: "500",
-    fontFamily: FONT,
-  },
 });

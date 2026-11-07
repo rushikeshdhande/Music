@@ -40,6 +40,30 @@ export const PlayIcon = ({
   />
 );
 
+
+// ── Four-line Menu Icon ────────────────────────────────────
+export const MenuIcon = ({
+  size = 24,
+  color = NAVBAR_ICON_COLOR,
+}: IconProps) => (
+  <Svg
+    width={size}
+    height={size}
+    viewBox="0 0 15 15"
+    fill="none"
+    accessible
+    accessibilityRole="image"
+    accessibilityLabel="Menu"
+  >
+    <Path
+      d="M1.5 1.5H13.5 M1.5 5.5H13.5 M1.5 9.5H13.5 M1.5 13.5H13.5"
+      stroke={color}
+      strokeWidth={1}
+      strokeLinecap="round"
+    />
+  </Svg>
+);
+
 // ── Pin Song ────────────────────────────────────────────────
 export const PinSongIcon = ({
   size = 24,

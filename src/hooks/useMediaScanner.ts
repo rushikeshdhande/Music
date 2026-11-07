@@ -1,16 +1,18 @@
+// src/hooks/useMediaScanner.ts
 import { useCallback } from "react";
 import { useMediaStore } from "../store/mediaStore";
 import { scanAudio } from "../services/mediaScanner/audioScanner";
 import { mediaDatabase } from "../services/mediaScanner/mediaDatabase";
 
-export function useMediaScanner() {
-  const setSongs = useMediaStore((s) => s.setSongs);
+// ── Module-level guard: at most ONE native scan at a time ──────────────────
+let inflight: Promise<number> | null = null;
 
-  const scanAll = useCallback(async () => {
+async function runScan(): Promise<number> {
+  if (inflight) return inflight;
+
+  inflight = (async () => {
     console.log("[DEBUG] scanAll() CALLED");
-
     const songs = await scanAudio();
-
     console.log("[DEBUG] Songs returned:", songs.length);
 
     const favorites = useMediaStore.getState().favoritesSong;
@@ -19,15 +21,20 @@ export function useMediaScanner() {
       isFavorite: !!favorites[s.id],
     }));
 
-    setSongs(withFav);
+    useMediaStore.getState().setSongs(withFav);
     await mediaDatabase.saveSongIds(songs.map((s) => s.id));
-
     return songs.length;
-  }, [setSongs]);
+  })();
 
-  const scanEverything = useCallback(async () => {
-    await scanAll();
-  }, [scanAll]);
+  try {
+    return await inflight;
+  } finally {
+    inflight = null;
+  }
+}
 
+export function useMediaScanner() {
+  const scanAll = useCallback(() => runScan(), []);
+  const scanEverything = useCallback(() => runScan(), []);
   return { scanAll, scanEverything };
 }

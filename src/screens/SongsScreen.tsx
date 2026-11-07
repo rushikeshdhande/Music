@@ -27,7 +27,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import Svg, { Path } from "react-native-svg";
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer from "@rntp/player";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTheme } from "../hooks/useTheme";
 import { useMediaStore } from "../store/mediaStore";
 import { usePlayerStore } from "../store/playerStore";
@@ -67,13 +68,16 @@ const MAX_LOADER_MS = 6000;
 
 const PINNED_FILE = (FileSystem.documentDirectory ?? "") + "pinned_songs.json";
 
+// left icon  → Filter by
 const LIST_ICON = require("../../assets/images/list.png");
+// right icon → Sort by (3-dot).
+const MORE_ICON = require("../../assets/apple/moreicon.png");
 
 const FONT = "sans-serif";
 const ACTION_BG = "#1c1c1e";
 const ACTION_RADIUS = 26;
 const ACTION_HEIGHT = 52;
-const ACTION_TOP_GAP = 22;
+const ACTION_TOP_GAP = 5;
 
 const MUSIC_DEFAULT_PNG = require("../../assets/images/musicdefault.png");
 
@@ -81,15 +85,45 @@ const ART_RADIUS = 6;
 const ART_BORDER_WIDTH = 0.5;
 const ART_BORDER_COLOR = "rgba(255,255,255,0.3)";
 
+// ── Swipe gesture config ───────────────────────────────────────────
+const SWIPE_TRIGGER = 90;
+const SWIPE_MAX = 140;
+const SWIPE_QUEUE_BG = "#FF9F0A";
+const SWIPE_DELETE_BG = "#FF453A";
+
+type SortKey = "title" | "recent" | "artist";
+type FilterKey = "all" | "favorites";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "title", label: "Title" },
+  { key: "recent", label: "Recently Added" },
+  { key: "artist", label: "Artist" },
+];
+
+const FILTER_OPTIONS: { key: FilterKey; label: string }[] = [
+  { key: "all", label: "All Songs" },
+  { key: "favorites", label: "Favourites" },
+];
+
 const cmp = (a?: string, b?: string) =>
   (a ?? "").localeCompare(b ?? "", undefined, { sensitivity: "base" });
+
+const addedAt = (s: any): number => {
+  const v =
+    s?.dateAdded ??
+    s?.creationTime ??
+    s?.addedAt ??
+    s?.modificationTime ??
+    s?.modifiedAt ??
+    0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
 const UNKNOWN_ARTIST = "Unknown artist";
 const UNKNOWN_ALBUM = "Unknown album";
 
-const SHOW_DUMMY_SONGS = false;
-const DUMMY_SONGS: any[] = [];
-
+ 
 const shuffleArray = <T,>(arr: T[]): T[] => {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -98,43 +132,14 @@ const shuffleArray = <T,>(arr: T[]): T[] => {
   }
   return a;
 };
-const isDummy = (id?: string | null) => !!id && id.startsWith("dummy-");
 
-// ── site-name cleaner (kept identical) ─────────────────────────────
 const SITE_WORDS = [
-  "pagalnew",
-  "pagalworld",
-  "pagalfree",
-  "pagalmovies",
-  "pagalsong",
-  "pagal",
-  "djmaza",
-  "mrjatt",
-  "mr-jatt",
-  "songspk",
-  "wapking",
-  "webmusic",
-  "djpunjab",
-  "djjohal",
-  "mp3mad",
-  "mp3song",
-  "mymp3song",
-  "freshmaza",
-  "musicmaza",
-  "raagsong",
-  "bollywoodmp3",
-  "djyoungster",
-  "jiosaavn",
-  "hungama",
-  "gaana",
-  "downloadming",
-  "songsmp3",
-  "sensongsmp3",
-  "pendujatt",
-  "jattmp3",
-  "newmp3",
-  "mp3 download",
-  "free download",
+  "pagalnew", "pagalworld", "pagalfree", "pagalmovies", "pagalsong", "pagal",
+  "djmaza", "mrjatt", "mr-jatt", "songspk", "wapking", "webmusic", "djpunjab",
+  "djjohal", "mp3mad", "mp3song", "mymp3song", "freshmaza", "musicmaza",
+  "raagsong", "bollywoodmp3", "djyoungster", "jiosaavn", "hungama", "gaana",
+  "downloadming", "songsmp3", "sensongsmp3", "pendujatt", "jattmp3", "newmp3",
+  "mp3 download", "free download",
 ];
 const SITE_WORDS_RE = SITE_WORDS.map((w) =>
   w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*"),
@@ -184,7 +189,6 @@ const isUnknownArtist = (a?: string | null): boolean => {
   return /^<?\s*unknown(\s+artist)?\s*>?$/i.test(t);
 };
 
-// ── ID3 reading (kept identical) ───────────────────────────────────
 const B64_CHARS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_LOOKUP = (() => {
@@ -389,16 +393,14 @@ const PinIcon = ({
   </Svg>
 );
 
-const ICON_PLAY = "M8 5v14l11-7z";
-const ICON_NEXT = require("../../assets/images/Playnext.png");
 const ICON_QUEUE =
   "M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z";
-const ICON_PIN =
-  "M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z";
+const ICON_NEXT = require("../../assets/images/Playnext.png");
 const ICON_HEART = require("../../assets/images/favourite.png");
 const ICON_HEART_OUTLINE = require("../../assets/images/notstar.png");
 const ICON_DELETE =
   "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z";
+const ICON_CHECK = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z";
 
 const SheetIcon = ({
   d,
@@ -512,6 +514,274 @@ function ArtworkBox({
   );
 }
 
+// ============================================================
+// PickerSheet
+// ============================================================
+function PickerSheet<K extends string>({
+  visible,
+  title,
+  options,
+  selectedKey,
+  onSelect,
+  onClose,
+  bottomInset,
+  textColor,
+  accent,
+  borderColor,
+}: {
+  visible: boolean;
+  title: string;
+  options: { key: K; label: string }[];
+  selectedKey: K;
+  onSelect: (key: K) => void;
+  onClose: () => void;
+  bottomInset: number;
+  textColor: string;
+  accent: string;
+  borderColor: string;
+}) {
+  const { height: winH } = useWindowDimensions();
+  const y = useRef(new Animated.Value(winH)).current;
+  const backdrop = useRef(new Animated.Value(0)).current;
+  const closing = useRef(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    closing.current = false;
+    y.setValue(winH);
+    backdrop.setValue(0);
+    Animated.parallel([
+      Animated.timing(y, {
+        toValue: 0,
+        duration: 280,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdrop, {
+        toValue: 1,
+        duration: 240,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [visible, winH, y, backdrop]);
+
+  const animateOut = useCallback(
+    (after?: () => void) => {
+      if (closing.current) return;
+      closing.current = true;
+      Animated.parallel([
+        Animated.timing(y, {
+          toValue: winH,
+          duration: 210,
+          easing: Easing.in(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(backdrop, {
+          toValue: 0,
+          duration: 210,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        onClose();
+        after?.();
+      });
+    },
+    [y, backdrop, winH, onClose],
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="none"
+      statusBarTranslucent
+      onRequestClose={() => animateOut()}
+    >
+      <View style={styles.sheetRoot}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => animateOut()}
+        >
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFill,
+              { backgroundColor: "rgba(0,0,0,0.45)", opacity: backdrop },
+            ]}
+          />
+        </Pressable>
+
+        <Animated.View
+          style={[
+            styles.sheetCard,
+            {
+              backgroundColor: "#1c1c1e",
+              borderColor,
+              paddingBottom: bottomInset + 8,
+              transform: [{ translateY: y }],
+            },
+          ]}
+        >
+          <Text style={[styles.pickerTitle, { color: textColor }]}>
+            {title}
+          </Text>
+
+          <View style={[styles.popupDivider, { backgroundColor: borderColor }]} />
+
+          {options.map((opt) => {
+            const selected = opt.key === selectedKey;
+            return (
+              <TouchableOpacity
+                key={opt.key}
+                style={styles.pickerItem}
+                activeOpacity={0.7}
+                onPress={() => animateOut(() => onSelect(opt.key))}
+              >
+                <Text
+                  style={[
+                    styles.pickerItemText,
+                    {
+                      color: selected ? accent : textColor,
+                      fontWeight: selected ? "700" : "400",
+                    },
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+                {selected && <SheetIcon d={ICON_CHECK} size={22} color={accent} />}
+              </TouchableOpacity>
+            );
+          })}
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+// ============================================================
+// SwipeableSongRow
+// ============================================================
+const SwipeableSongRow = React.memo(function SwipeableSongRow({
+  children,
+  backgroundColor,
+  onSwipeRight,
+  onSwipeLeft,
+}: {
+  children: React.ReactNode;
+  backgroundColor: string;
+  onSwipeRight: () => void;
+  onSwipeLeft: () => void;
+}) {
+  const translateX = useRef(new Animated.Value(0)).current;
+
+  const handlers = useRef({ onSwipeRight, onSwipeLeft });
+  handlers.current = { onSwipeRight, onSwipeLeft };
+
+  const springBack = useCallback(() => {
+    Animated.spring(translateX, {
+      toValue: 0,
+      useNativeDriver: true,
+      stiffness: 180,
+      damping: 24,
+      mass: 0.9,
+      overshootClamping: true,
+    }).start();
+  }, [translateX]);
+
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, g) =>
+          Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.4,
+        onMoveShouldSetPanResponderCapture: (_, g) =>
+          Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.4,
+        onPanResponderGrant: () => {
+          translateX.stopAnimation();
+        },
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderMove: (_, g) => {
+          const abs = Math.abs(g.dx) * 0.9;
+          const eased =
+            abs <= SWIPE_MAX ? abs : SWIPE_MAX + (abs - SWIPE_MAX) * 0.25;
+          Animated.timing(translateX, {
+            toValue: g.dx < 0 ? -eased : eased,
+            duration: 60,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }).start();
+        },
+        onPanResponderRelease: (_, g) => {
+          if (g.dx >= SWIPE_TRIGGER) {
+            handlers.current.onSwipeRight();
+          } else if (g.dx <= -SWIPE_TRIGGER) {
+            handlers.current.onSwipeLeft();
+          }
+          springBack();
+        },
+        onPanResponderTerminate: () => springBack(),
+      }),
+    [translateX, springBack],
+  );
+
+  const queueOpacity = translateX.interpolate({
+    inputRange: [0, 16],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
+  const deleteOpacity = translateX.interpolate({
+    inputRange: [-16, 0],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+  const queueIconScale = translateX.interpolate({
+    inputRange: [0, SWIPE_TRIGGER],
+    outputRange: [0.7, 1.1],
+    extrapolate: "clamp",
+  });
+  const deleteIconScale = translateX.interpolate({
+    inputRange: [-SWIPE_TRIGGER, 0],
+    outputRange: [1.1, 0.7],
+    extrapolate: "clamp",
+  });
+
+  return (
+    <View style={styles.swipeWrap}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          styles.swipeBgLeft,
+          { backgroundColor: SWIPE_QUEUE_BG, opacity: queueOpacity },
+        ]}
+      >
+        <Animated.View style={{ transform: [{ scale: queueIconScale }] }}>
+          <SheetIcon d={ICON_QUEUE} size={28} color="#fff" />
+        </Animated.View>
+      </Animated.View>
+
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          styles.swipeBgRight,
+          { backgroundColor: SWIPE_DELETE_BG, opacity: deleteOpacity },
+        ]}
+      >
+        <Animated.View style={{ transform: [{ scale: deleteIconScale }] }}>
+          <SheetIcon d={ICON_DELETE} size={28} color="#fff" />
+        </Animated.View>
+      </Animated.View>
+
+      <Animated.View
+        {...pan.panHandlers}
+        style={{ backgroundColor, transform: [{ translateX }] }}
+      >
+        {children}
+      </Animated.View>
+    </View>
+  );
+});
+
 export default function SongsScreen() {
   const theme = useTheme();
   const nav = useNavigation<any>();
@@ -521,9 +791,16 @@ export default function SongsScreen() {
   const isDark = theme.mode === "dark";
 
   const BG_COLOR = theme.background;
+  const ROW_BG =
+    typeof theme.background === "string" &&
+    /^#([0-9a-f]{6})$/i.test(theme.background)
+      ? theme.background
+      : isDark
+        ? "#000000"
+        : "#FFFFFF";
   const SURFACE_COLOR = theme.surface;
   const BORDER_COLOR = theme.border;
-  const ACCENT = theme.primary;
+  const ACCENT = theme.iconsColour;
 
   const DIVIDER_COLOR = isDark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.14)";
 
@@ -535,7 +812,7 @@ export default function SongsScreen() {
   const isPlayerPlaying = usePlayerStore((s) => s.isPlaying);
 
   const { scanAll } = useMediaScanner();
-    const audio = useAudioPlayer() as any;
+  const audio = useAudioPlayer() as any;
   const { loadAndPlay } = audio;
   const { artworkMap, remove: removeArtwork } = useArtworkCache(songs);
 
@@ -552,7 +829,11 @@ export default function SongsScreen() {
   const [scanning, setScanning] = useState(songs.length === 0);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const [menuVisible, setMenuVisible] = useState(false);
+  const [sortBy, setSortBy] = useState<SortKey>("title");
+  const [filterBy, setFilterBy] = useState<FilterKey>("all");
+  const [sortVisible, setSortVisible] = useState(false);
+  const [filterVisible, setFilterVisible] = useState(false);
+
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -607,35 +888,8 @@ export default function SongsScreen() {
     return () => clearTimeout(t);
   }, [tagsLoaded, artLoaded, songs, artworkMap]);
 
-  const dropdownScale = useRef(new Animated.Value(0.9)).current;
-  const dropdownOpacity = useRef(new Animated.Value(0)).current;
-  const menuClosing = useRef(false);
-
   const [pinnedIds, setPinnedIds] = useState<Record<string, boolean>>({});
   const pinnedLoaded = useRef(false);
-
-  useEffect(() => {
-    if (!menuVisible) return;
-
-    menuClosing.current = false;
-    dropdownScale.setValue(0.9);
-    dropdownOpacity.setValue(0);
-
-    Animated.parallel([
-      Animated.timing(dropdownScale, {
-        toValue: 1,
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(dropdownOpacity, {
-        toValue: 1,
-        duration: 180,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [menuVisible, dropdownScale, dropdownOpacity]);
 
   useEffect(() => {
     mounted.current = true;
@@ -649,32 +903,10 @@ export default function SongsScreen() {
     registerDeleteNotificationEvents();
   }, []);
 
-  const openMenu = useCallback(() => {
-    setMenuVisible(true);
-  }, []);
-
-  const closeMenu = useCallback(() => {
-    if (menuClosing.current) return;
-    menuClosing.current = true;
-
-    Animated.parallel([
-      Animated.timing(dropdownScale, {
-        toValue: 0.94,
-        duration: 140,
-        easing: Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }),
-      Animated.timing(dropdownOpacity, {
-        toValue: 0,
-        duration: 140,
-        easing: Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      menuClosing.current = false;
-      setMenuVisible(false);
-    });
-  }, [dropdownScale, dropdownOpacity]);
+  const openSort = useCallback(() => setSortVisible(true), []);
+  const closeSort = useCallback(() => setSortVisible(false), []);
+  const openFilter = useCallback(() => setFilterVisible(true), []);
+  const closeFilter = useCallback(() => setFilterVisible(false), []);
 
   useEffect(() => {
     if (initialScanStarted.current) return;
@@ -748,7 +980,7 @@ export default function SongsScreen() {
 
   const filteredSongs = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const allSongs = [...songs, ...(SHOW_DUMMY_SONGS ? DUMMY_SONGS : [])];
+ const allSongs = songs;
 
     let list = allSongs.map((song) => {
       const rawArtist = cleanSiteName((song as any).artist, false);
@@ -785,6 +1017,10 @@ export default function SongsScreen() {
       };
     });
 
+    if (filterBy === "favorites") {
+      list = list.filter((song) => !!favorites?.[song.id]);
+    }
+
     if (query) {
       list = list.filter((song) =>
         `${song.title} ${song.artist} ${song.album}`
@@ -797,9 +1033,22 @@ export default function SongsScreen() {
       const pa = pinnedIds[a.id] ? 0 : 1;
       const pb = pinnedIds[b.id] ? 0 : 1;
       if (pa !== pb) return pa - pb;
+
+      if (sortBy === "recent") {
+        const diff = addedAt(b) - addedAt(a);
+        if (diff !== 0) return diff;
+        return cmp(a.title, b.title);
+      }
+
+      if (sortBy === "artist") {
+        const c = cmp(a.artist, b.artist);
+        if (c !== 0) return c;
+        return cmp(a.title, b.title);
+      }
+
       return cmp(a.title, b.title);
     });
-  }, [songs, search, artworkMap, tagData, pinnedIds]);
+  }, [songs, search, artworkMap, tagData, pinnedIds, sortBy, filterBy, favorites]);
 
   const onRefresh = useCallback(async () => {
     if (refreshBusy.current) return;
@@ -830,10 +1079,7 @@ export default function SongsScreen() {
 
   const playSong = useCallback(
     async (song: Song) => {
-      if (isDummy(song.id)) {
-        showToast("Dummy song — can't be played");
-        return;
-      }
+     
 
       const playable = filteredSongs;
       const index = playable.findIndex((item) => item.id === song.id);
@@ -875,6 +1121,7 @@ export default function SongsScreen() {
     [filteredSongs, loadAndPlay, actionBusy],
   );
 
+  // ── DELETE LOGIC WITH NOTIFICATION SETTING ──────────────────────────
   const performDelete = useCallback(
     async (song: Song) => {
       setActionBusy(true);
@@ -883,7 +1130,13 @@ export default function SongsScreen() {
       let deleteStarted = false;
 
       try {
-        await dismissDeleteNotification();
+        // Check user preference for delete notifications
+        const notifPref = await AsyncStorage.getItem("@song/delete_notif");
+        const useNotifications = notifPref === "true";
+
+        if (useNotifications) {
+          await dismissDeleteNotification();
+        }
 
         const uri = (song as any).uri ?? (song as any).path;
         let fileSizeBytes = 0;
@@ -915,15 +1168,19 @@ export default function SongsScreen() {
           return true;
         };
 
-        await showDeleteWaiting({
-          songTitle: song.title,
-          fileSizeMB,
-          onCancel,
-        });
+        if (useNotifications) {
+          await showDeleteWaiting({
+            songTitle: song.title,
+            fileSizeMB,
+            onCancel,
+          });
 
-        if (cancelled || isDeleteCancelled()) {
-          await dismissDeleteNotification();
-          return;
+          if (cancelled || isDeleteCancelled()) {
+            await dismissDeleteNotification();
+            return;
+          }
+        } else {
+          showToast("Deleting...");
         }
 
         deleteStarted = true;
@@ -932,7 +1189,7 @@ export default function SongsScreen() {
           const deleted = await MediaLibrary.deleteAssetsAsync([song.id]);
 
           if (deleted === false) {
-            await dismissDeleteNotification();
+            if (useNotifications) await dismissDeleteNotification();
             showToast("Delete cancelled");
             return;
           }
@@ -942,67 +1199,74 @@ export default function SongsScreen() {
             /permission/i.test(msg) && /(grant|denied|allow|write)/i.test(msg);
 
           if (isDeleteCancelled() || denied) {
-            await dismissDeleteNotification();
+            if (useNotifications) await dismissDeleteNotification();
             showToast("Delete cancelled");
             return;
           }
 
           console.error("[SongsScreen] Delete failed:", error);
-          await showDeleteFailed({
-            songTitle: song.title,
-            fileSizeMB,
-            reason: msg,
-          });
+          if (useNotifications) {
+            await showDeleteFailed({
+              songTitle: song.title,
+              fileSizeMB,
+              reason: msg,
+            });
+          }
           showToast("Delete failed — try again");
           return;
         }
 
-        await showDeleteSuccess({
-          songTitle: song.title,
-          fileSizeMB,
-        });
+        if (useNotifications) {
+          await showDeleteSuccess({
+            songTitle: song.title,
+            fileSizeMB,
+          });
+        }
 
         removeArtwork(song.id);
         delete artKeep.current[song.id];
 
-        // 🔥 FIX 1: Instantly update MediaStore
         const store = useMediaStore.getState() as any;
-        const nextSongs = (store.songs || []).filter((s: any) => String(s.id) !== String(song.id));
+        const nextSongs = (store.songs || []).filter(
+          (s: any) => String(s.id) !== String(song.id),
+        );
         const nextFav = { ...(store.favoritesSong || {}) };
         delete nextFav[song.id];
         useMediaStore.setState({ songs: nextSongs, favoritesSong: nextFav });
 
-          // 🔥 FIX: Instantly update PlayerStore and stop audio
-                // 🔥 FIX: Instantly update PlayerStore and stop native background audio
-              // 🔥 FIX: Instantly update PlayerStore and stop native background audio
         try {
           const ps: any = usePlayerStore.getState();
-          if (ps?.currentTrack && String(ps.currentTrack.id) === String(song.id)) {
-            
-            // Force native TrackPlayer to stop and clear the queue
+          if (
+            ps?.currentTrack &&
+            String(ps.currentTrack.id) === String(song.id)
+          ) {
             try {
-              await TrackPlayer.reset(); 
+              await TrackPlayer.stop();
             } catch (e) {
-              console.log("TrackPlayer reset error:", e);
+              console.log("[SongsScreen] TrackPlayer.stop error:", e);
             }
+                      try {
+              await (TrackPlayer as any).removeUpcomingTracks?.();
+            } catch {}
 
-            // Fallback to hook methods
-            try { await audio?.stop?.(); } catch (e) {}
-            try { await audio?.pause?.(); } catch (e) {}
-            
-            // Clear React Store
-            if (typeof ps.setCurrentTrack === "function") ps.setCurrentTrack(null);
+            try {
+              await audio?.pause?.();
+            } catch (e) {}
+
+            if (typeof ps.setCurrentTrack === "function")
+              ps.setCurrentTrack(null);
             if (typeof ps.setIsPlaying === "function") ps.setIsPlaying(false);
             if (typeof ps.clearQueue === "function") ps.clearQueue();
           } else if (Array.isArray(ps.queue)) {
-            const newQueue = ps.queue.filter((s: any) => String(s.id) !== String(song.id));
+            const newQueue = ps.queue.filter(
+              (s: any) => String(s.id) !== String(song.id),
+            );
             if (typeof ps.setQueue === "function") ps.setQueue(newQueue);
           }
         } catch (e) {
-          console.warn("[SongsScreen] Failed to reset player:", e);
+          console.warn("[SongsScreen] Failed to stop player:", e);
         }
 
-        // 🔥 FIX 3: Run scan in background (don't await)
         scanAll().catch((scanError: any) => {
           console.error("[SongsScreen] Scan after delete failed:", scanError);
         });
@@ -1019,49 +1283,54 @@ export default function SongsScreen() {
     },
     [scanAll, removeArtwork],
   );
-  const deleteSong = useCallback(() => {
-    const song = selectedSong;
-    if (!song || actionBusy) return;
-    if (isDummy(song.id)) {
-      showToast("Dummy song — can't be deleted");
-      return;
-    }
 
-    Alert.alert(
-      "Delete song?",
-      `Delete "${song.title}" from your device? Android may ask you to approve the deletion.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => performDelete(song),
-        },
-      ],
-    );
-  }, [selectedSong, actionBusy, performDelete]);
+  const confirmDelete = useCallback(
+    (song: Song) => {
+      if (!song || actionBusy) return;
+     
 
-  useEffect(() => {
+      Alert.alert(
+        "Delete song?",
+        `Are you sure you want to delete "${song.title}" from your device? Android may ask you to approve the deletion.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => performDelete(song),
+          },
+        ],
+      );
+    },
+    [actionBusy, performDelete],
+  );
+
+   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const info = await FileSystem.getInfoAsync(PINNED_FILE);
-        if (info.exists) {
+        if (info.exists && !cancelled) {
           const raw = await FileSystem.readAsStringAsync(PINNED_FILE);
           const arr = JSON.parse(raw);
-          if (Array.isArray(arr) && mounted.current) {
+          if (Array.isArray(arr) && mounted.current && !cancelled) {
             const map: Record<string, boolean> = {};
             arr.forEach((id: any) => {
               map[String(id)] = true;
             });
-            setPinnedIds(map);
+            // Merge, don't replace — so pins tapped while loading are kept
+            setPinnedIds((prev) => ({ ...map, ...prev }));
           }
         }
       } catch {
         // ignore
       } finally {
-        pinnedLoaded.current = true;
+        if (!cancelled) pinnedLoaded.current = true;
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1088,10 +1357,7 @@ export default function SongsScreen() {
 
   const playNext = useCallback(
     (song: Song) => {
-      if (isDummy(song.id)) {
-        showToast("Dummy song — can't be queued");
-        return;
-      }
+ 
       const st: any = usePlayerStore.getState();
       if (!st.currentTrack) {
         playSong(song);
@@ -1122,10 +1388,7 @@ export default function SongsScreen() {
 
   const addToQueue = useCallback(
     (song: Song) => {
-      if (isDummy(song.id)) {
-        showToast("Dummy song — can't be queued");
-        return;
-      }
+ 
       const st: any = usePlayerStore.getState();
       if (!st.currentTrack) {
         playSong(song);
@@ -1278,67 +1541,73 @@ export default function SongsScreen() {
       const artistName = item.artist || UNKNOWN_ARTIST;
 
       return (
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => playSong(item)}
-          onLongPress={() => setSelectedSong(item)}
-          style={styles.listRow}
+        <SwipeableSongRow
+          backgroundColor={ROW_BG}
+          onSwipeRight={() => addToQueue(item)}
+          onSwipeLeft={() => confirmDelete(item)}
         >
-          {isPlaying && (
-            <View pointerEvents="none" style={styles.playingDotWrap}>
-              <View
-                style={[
-                  styles.playingDot,
-                  { backgroundColor: "rgba(255,255,255,0.4)" },
-                ]}
-              />
-            </View>
-          )}
-
-          <ArtworkBox
-            uri={artwork}
-            size={52}
-            radius={ART_RADIUS}
-            borderWidth={ART_BORDER_WIDTH}
-            borderColor={ART_BORDER_COLOR}
-            reloadKey={reloadKey}
-            fallbackBg={SURFACE_COLOR}
-            iconColor={theme.textSecondary}
-          />
-
-          <View style={styles.listInfo}>
-            <Text
-              numberOfLines={1}
-              style={[styles.listTitle, { color: theme.text }]}
-            >
-              {item.title}
-            </Text>
-            <Text
-              numberOfLines={1}
-              style={[styles.listArtist, { color: theme.textSecondary }]}
-            >
-              {artistName}
-            </Text>
-          </View>
-
-          {isPinned && (
-            <View style={styles.listPin}>
-              <PinIcon size={13} color={theme.textSecondary} />
-            </View>
-          )}
-
-          {isFav && (
-            <Text style={[styles.listFavStar, { color: ACCENT }]}>★</Text>
-          )}
-
           <TouchableOpacity
-            onPress={() => setSelectedSong(item)}
-            style={styles.listMoreBtn}
-            hitSlop={10}
+            activeOpacity={0.7}
+            onPress={() => playSong(item)}
+            onLongPress={() => setSelectedSong(item)}
+            style={styles.listRow}
           >
-            <EllipsisVerticalIcon size={20} color={theme.textSecondary} />
+            {isPlaying && (
+              <View pointerEvents="none" style={styles.playingDotWrap}>
+                <View
+                  style={[
+                    styles.playingDot,
+                    { backgroundColor: "rgba(255,255,255,0.4)" },
+                  ]}
+                />
+              </View>
+            )}
+
+            <ArtworkBox
+              uri={artwork}
+              size={52}
+              radius={ART_RADIUS}
+              borderWidth={ART_BORDER_WIDTH}
+              borderColor={ART_BORDER_COLOR}
+              reloadKey={reloadKey}
+              fallbackBg={SURFACE_COLOR}
+              iconColor={theme.textSecondary}
+            />
+
+            <View style={styles.listInfo}>
+              <Text
+                numberOfLines={1}
+                style={[styles.listTitle, { color: theme.text }]}
+              >
+                {item.title}
+              </Text>
+              <Text
+                numberOfLines={1}
+                style={[styles.listArtist, { color: theme.textSecondary }]}
+              >
+                {artistName}
+              </Text>
+            </View>
+
+            {isPinned && (
+              <View style={styles.listPin}>
+                <PinIcon size={13} color={theme.textSecondary} />
+              </View>
+            )}
+
+            {isFav && (
+              <Text style={[styles.listFavStar, { color: ACCENT }]}>★</Text>
+            )}
+
+            <TouchableOpacity
+              onPress={() => setSelectedSong(item)}
+              style={styles.listMoreBtn}
+              hitSlop={10}
+            >
+              <EllipsisVerticalIcon size={20} color={theme.textSecondary} />
+            </TouchableOpacity>
           </TouchableOpacity>
-        </TouchableOpacity>
+        </SwipeableSongRow>
       );
     },
     [
@@ -1347,7 +1616,10 @@ export default function SongsScreen() {
       currentTrack,
       isPlayerPlaying,
       playSong,
+      addToQueue,
+      confirmDelete,
       theme,
+      ROW_BG,
       SURFACE_COLOR,
       ACCENT,
       BORDER_COLOR,
@@ -1364,8 +1636,6 @@ export default function SongsScreen() {
   const contentStyle =
     filteredSongs.length === 0 ? styles.emptyContainer : styles.listContent;
 
-  // ✅ Only the Play/Shuffle action row remains in the list header.
-  //    Title + search now live in the shared LibraryPageHeaders.
   const listHeader = (
     <View style={styles.headerSection}>
       <View style={styles.actionRow}>
@@ -1392,7 +1662,6 @@ export default function SongsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: BG_COLOR }]}>
-      {/* ---------- SHARED HEADER (top bar + title + search) ---------- */}
       <LibraryPageHeaders
         colors={theme}
         topInset={insets.top}
@@ -1403,10 +1672,16 @@ export default function SongsScreen() {
         searchPlaceholder="Search songs, artists, albums"
         actions={[
           {
-            key: "menu",
+            key: "filter",
             icon: LIST_ICON,
             iconStyle: { width: 23, height: 20 },
-            onPress: openMenu,
+            onPress: openFilter,
+          },
+          {
+            key: "sort",
+            icon: MORE_ICON,
+            iconStyle: { width: 20, height: 20 },
+            onPress: openSort,
           },
         ]}
       />
@@ -1466,6 +1741,17 @@ export default function SongsScreen() {
                     Pull down to scan your device again.
                   </Text>
                 </>
+              ) : filterBy === "favorites" && !search.trim() ? (
+                <>
+                  <Text style={[styles.emptyTitle, { color: theme.text }]}>
+                    No favourite songs
+                  </Text>
+                  <Text
+                    style={[styles.emptyText, { color: theme.textSecondary }]}
+                  >
+                    Mark songs as favourite to see them here.
+                  </Text>
+                </>
               ) : (
                 <>
                   <Text style={[styles.emptyTitle, { color: theme.text }]}>
@@ -1485,67 +1771,32 @@ export default function SongsScreen() {
 
       <ScreenLoader visible={showLoading} />
 
-      {/* ---- Header dropdown — Settings & Account only (unchanged) ---- */}
-      <Modal
-        visible={menuVisible}
-        transparent
-        animationType="none"
-        statusBarTranslucent
-        onRequestClose={closeMenu}
-      >
-        <Pressable style={styles.dropdownBackdrop} onPress={closeMenu}>
-          <Animated.View
-            style={[
-              styles.dropdownCard,
-              {
-                backgroundColor: SURFACE_COLOR,
-                borderColor: BORDER_COLOR,
-                shadowColor: "#000",
-                shadowOpacity: isDark ? 0.45 : 0.18,
-                top: insets.top + 44,
-                right: 10,
-                opacity: dropdownOpacity,
-                transform: [{ scale: dropdownScale }],
-                transformOrigin: "top right",
-              } as any,
-            ]}
-          >
-            <Pressable onPress={(e) => e.stopPropagation()}>
-              <TouchableOpacity
-                style={styles.dropdownRow}
-                activeOpacity={0.7}
-                onPress={() => {
-                  closeMenu();
-                  nav.navigate("Settings");
-                }}
-              >
-                <Text style={[styles.dropdownItemText, { color: theme.text }]}>
-                  Settings
-                </Text>
-              </TouchableOpacity>
+      <PickerSheet<SortKey>
+        visible={sortVisible}
+        title="Sort By"
+        options={SORT_OPTIONS}
+        selectedKey={sortBy}
+        onSelect={setSortBy}
+        onClose={closeSort}
+        bottomInset={insets.bottom}
+        textColor={theme.text}
+        accent={ACCENT}
+        borderColor={theme.border}
+      />
 
-              <View
-                style={[styles.menuDivider, { backgroundColor: BORDER_COLOR }]}
-              />
+      <PickerSheet<FilterKey>
+        visible={filterVisible}
+        title="Filter By"
+        options={FILTER_OPTIONS}
+        selectedKey={filterBy}
+        onSelect={setFilterBy}
+        onClose={closeFilter}
+        bottomInset={insets.bottom}
+        textColor={theme.text}
+        accent={ACCENT}
+        borderColor={theme.border}
+      />
 
-              <TouchableOpacity
-                style={styles.dropdownRow}
-                activeOpacity={0.7}
-                onPress={() => {
-                  closeMenu();
-                  nav.navigate("Account");
-                }}
-              >
-                <Text style={[styles.dropdownItemText, { color: theme.text }]}>
-                  Account
-                </Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
-      </Modal>
-
-      {/* ---- Song 3-dot bottom sheet (unchanged) ---- */}
       <Modal
         visible={!!selectedSong}
         transparent
@@ -1684,7 +1935,7 @@ export default function SongsScreen() {
                     label: "Delete Song",
                     icon: ICON_DELETE,
                     destructive: true,
-                    onPress: deleteSong,
+                    onPress: () => confirmDelete(song),
                   },
                 ];
 
@@ -1737,14 +1988,9 @@ export default function SongsScreen() {
   );
 }
 
-// ============================================================
-// Styles — header styles removed (now in LibraryPageHeaders)
-// ============================================================
 const styles = StyleSheet.create({
   container: { flex: 1 },
-
   headerSection: { paddingHorizontal: 12, paddingTop: 6, paddingBottom: 14 },
-
   actionRow: { flexDirection: "row", marginTop: ACTION_TOP_GAP },
   actionBtn: {
     flex: 1,
@@ -1762,10 +2008,19 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontFamily: FONT,
   },
-
   listWrap: { flex: 1 },
-
   listContent: { paddingBottom: 100 },
+  swipeWrap: { overflow: "hidden" },
+  swipeBgLeft: {
+    justifyContent: "center",
+    alignItems: "flex-start",
+    paddingLeft: 28,
+  },
+  swipeBgRight: {
+    justifyContent: "center",
+    alignItems: "flex-end",
+    paddingRight: 28,
+  },
   listRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1783,7 +2038,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   playingDotWrap: {
     position: "absolute",
     left: 4,
@@ -1793,7 +2047,6 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   playingDot: { width: 6, height: 6, borderRadius: 3 },
-
   emptyContainer: { flexGrow: 1 },
   empty: {
     flex: 1,
@@ -1815,38 +2068,6 @@ const styles = StyleSheet.create({
     fontFamily: SERIF,
     textAlign: "center",
   },
-
-  // ── Header Dropdown ──
-  dropdownBackdrop: { flex: 1, backgroundColor: "transparent" },
-  dropdownCard: {
-    position: "absolute",
-    width: 180,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 6,
-    overflow: "hidden",
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 18,
-  },
-  dropdownRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  dropdownItemText: {
-    fontSize: 15,
-    fontFamily: SERIF,
-    fontWeight: "500",
-  },
-  menuDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginHorizontal: 8,
-  },
-
-  // ── 3-Dot Bottom Sheet ──
   sheetRoot: { flex: 1, justifyContent: "flex-end" },
   sheetCard: {
     borderTopLeftRadius: 0,
@@ -1874,4 +2095,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   popupItemText: { marginLeft: 16, fontSize: 16, fontFamily: SERIF },
+  pickerTitle: {
+    textAlign: "center",
+    fontSize: 17,
+    fontWeight: "700",
+    fontFamily: SERIF,
+    marginBottom: 16,
+  },
+  pickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+  },
+  pickerItemText: { fontSize: 16, fontFamily: SERIF },
 });

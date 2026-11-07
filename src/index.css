@@ -1,91 +1,91 @@
+/* ============================================================
+   AUTO-THEMING GLASS CARD
+   Use:  <div class="card">…</div>
+   No width, no height — content + parent decide the size.
+   Background transparency + blur + border + shadow only.
+   Colours flip via [data-theme] or prefers-color-scheme.
+
+   Values mirror GlassSettings in src/hooks/useTheme.ts:
+     DARK_GLASS  → tintColor 28,  tintOpacity 0.6,
+                   frostBlur 16,  distortionStrength 40,
+                   shadowBlur 20, shadowSpread 0, blurTint "dark"
+     LIGHT_GLASS → tintColor 255, tintOpacity 0.7,
+                   frostBlur 16,  distortionStrength 40,
+                   shadowBlur 20, shadowSpread 0, blurTint "light"
+   ============================================================ */
+
+/* ── Theme tokens (default = dark, DARK_GLASS) ─────────── */
 :root {
-    color-scheme: dark;
+  /* tint layer: rgba(tintColor, tintColor, tintColor, tintOpacity) */
+  --card-bg:           rgba(28, 28, 28, 0.6);
 
-    /* Backgrounds — Soft Charcoal Dark */
-    --background: #1A1919;
-    --surface: #222121;
-    --surface-elevated: #2A2929;
-    --surface-highest: #333232;
-    --selected: #3A2024;
+  /* border: 0.08 + (distortionStrength / 100) * 0.3 → 0.08 + 0.12 = 0.20 */
+  --card-border:       rgba(255, 255, 255, 0.2);
 
-    /* Text */
-    --text: #F5F5F7;
-    --text-secondary: #B8B5B7;
-    --text-tertiary: #929092;
-    --text-disabled: #696769;
+  /* shadow: shadowBlur 20, shadowSpread 0, dark → rgba(0,0,0,0.35) */
+  --card-shadow:       rgba(0, 0, 0, 0.35);
+  --card-shadow-blur:  20px;
+  --card-shadow-y:     -8px;
+  --card-shadow-spread: 0px;
 
-    /* Icons and borders */
-    --icon: #F5F5F7;
-    --icon-secondary: #B0ADB0;
-    --icon-disabled: #696769;
-    --border: #3A3838;
-    --divider: #302E2E;
-
-    /* Effects */
-    --overlay: #CC000000;
-    --glass-tint: #26FFFFFF;
-    --glass-border: rgb(255 255 255 / 10%);
-    --glass-blur: 24px;
-
-    /* Components */
-    --tab-bar: #1D1C1C;
-    --mini-player: #272525;
-    --player-background: #1A1919;
-    --modal: #272525;
-    --input: #2A2929;
-
-    /* Media */
-    --progress: #D60017;
-    --progress-track: #494646;
-    --waveform: #FF3348;
-    --artwork-placeholder: #302E2E;
-    --video-overlay: #CC000000;
-    --favorite: #fe172e;
+  /* glass blur + saturation (frostBlur 16) */
+  --card-blur:         16px;
+  --card-saturate:     140%;
 }
 
-.light-theme {
-    color-scheme: light;
+/* ── Light theme (LIGHT_GLASS) ─────────────────────────── */
+:root[data-theme="light"],
+[data-theme="light"] {
+  --card-bg:      rgba(255, 255, 255, 0.7);
+  /* border: 0.06 + (40 / 100) * 0.12 → 0.06 + 0.048 = 0.108 */
+  --card-border:  rgba(0, 0, 0, 0.108);
+  --card-shadow:  rgba(0, 0, 0, 0.18);
+}
 
-    /* Backgrounds — Soft Light */
-    --background: #F5F5F7;
-    --surface: #FFFFFF;
-    --surface-elevated: #FFFFFF;
-    --surface-highest: #E8E8ED;
-    --selected: #FCE7EA;
+/* ── Follow OS when no explicit theme is set ───────────── */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --card-bg:      rgba(255, 255, 255, 0.7);
+    --card-border:  rgba(0, 0, 0, 0.108);
+    --card-shadow:  rgba(0, 0, 0, 0.18);
+  }
+}
 
-    /* Text */
-    --text: #151518;
-    --text-secondary: #666670;
-    --text-tertiary: #85858F;
-    --text-disabled: #B0B0B8;
+/* ============================================================
+   THE CARD
+   ============================================================ */
+.card {
+  /* only background transparency */
+  background-color: var(--card-bg);
 
-    /* Icons and borders */
-    --icon: #151518;
-    --icon-secondary: #777781;
-    --icon-disabled: #B0B0B8;
-    --border: #E2E2E7;
-    --divider: #EBEBEF;
+  /* shape + border */
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  overflow: hidden;
 
-    /* Effects */
-    --overlay: #66000000;
-    --glass-tint: #80FFFFFF;
-    --glass-border: rgb(0 0 0 / 8%);
+  /* glass blur (frostBlur 16, saturate 140%) */
+  -webkit-backdrop-filter: blur(var(--card-blur)) saturate(var(--card-saturate));
+  backdrop-filter:         blur(var(--card-blur)) saturate(var(--card-saturate));
 
-    /* Components */
-    --tab-bar: #FFFFFF;
-    --mini-player: #FFFFFF;
-    --player-background: #F5F5F7;
-    --modal: #FFFFFF;
-    --input: #FFFFFF;
+  /* shadow (shadowBlur 20, spread 0) */
+  box-shadow:
+    0 var(--card-shadow-y) var(--card-shadow-blur) var(--card-shadow-spread)
+      var(--card-shadow);
 
-    /* Media */
-    --progress: #D60017;
-    --progress-track: #DEDEE3;
-    --waveform: #FF3348;
-    --artwork-placeholder: #E8E8ED;
-    --video-overlay: #CC000000;
-    --favorite: #FF3348;
+  color: inherit;
+  transition: background-color 0.25s ease, border-color 0.25s ease,
+              box-shadow 0.25s ease;
 
-    /* Shadows */
-    --shadow-card: 0 8px 30px rgb(0 0 0 / 8%);
+  /* ⚠️ NO width, NO max-width, NO height, NO min-height — nothing here */
+}
+
+/* Optional shape helpers — still no size */
+.card--pill { border-radius: 50px; }
+.card--sm   { border-radius: 10px; }
+.card--lg   { border-radius: 24px; }
+.card--flat { box-shadow: none; }
+
+/* Fallback when backdrop-filter is unsupported */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .card { background-color: color-mix(in srgb, var(--card-bg) 70%, #000); }
 }

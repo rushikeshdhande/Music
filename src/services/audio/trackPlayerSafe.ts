@@ -3,8 +3,7 @@ type TrackPlayerApi = Record<string, any>;
 let cachedPlayer: TrackPlayerApi | null = null;
 
 function loadPlayerModule(): any {
-  // 🔥 FIX: Changed from "@rntp/player" to "react-native-track-player"
-  const mod = require("react-native-track-player");
+  const mod = require("@rntp/player");
   return mod?.default ?? mod;
 }
 
@@ -31,7 +30,7 @@ export function getTrackPlayer(): TrackPlayerApi {
   const player = loadPlayerModule();
 
   if (!player) {
-    throw new Error("react-native-track-player module is unavailable");
+    throw new Error("@rntp/player module is unavailable");
   }
 
   cachedPlayer = player as TrackPlayerApi;
@@ -43,16 +42,17 @@ export function getTrackPlayerEnums(): {
   State?: Record<string, any>;
   RepeatMode?: Record<string, any>;
   Capability?: Record<string, any>;
+  PlayerCommand?: Record<string, any>;
 } {
   try {
-    // 🔥 FIX: Changed from "@rntp/player" to "react-native-track-player"
-    const mod = require("react-native-track-player");
+    const mod = require("@rntp/player");
 
     return {
       Event: mod.Event,
       State: mod.State,
       RepeatMode: mod.RepeatMode,
       Capability: mod.Capability,
+      PlayerCommand: mod.PlayerCommand,
     };
   } catch (error) {
     console.warn("[TrackPlayerSafe] Failed to load enums:", error);

@@ -201,7 +201,7 @@ export default function AlbumScreen() {
   const BG_COLOR = theme.background;
   const SURFACE_COLOR = theme.surface;
   const BORDER_COLOR = theme.border;
-  const ACCENT = theme.primary;
+  const ACCENT = theme.iconsColour;
 
   const { width: winW } = useWindowDimensions();
   const H_PAD = 12;

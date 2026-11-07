@@ -19,9 +19,12 @@ import {
   ActivityIndicator,
   Dimensions,
   Animated,
+  RefreshControl,
+  LayoutAnimation,
+  Platform,
   Easing,
 } from "react-native";
-
+import { getCachedTags } from "../../services/audioTags/tagService";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import DraggableFlatList, {
@@ -31,9 +34,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Svg, { Path } from "react-native-svg";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer from "@rntp/player";
 import Header from "../../components/Header";
-// 👇 Import TopStatusGlass
 import TopStatusGlass from "../../components/TopStatusGlass";
 import { useTheme } from "../../hooks/useTheme";
 import { useAudioPlayer } from "../../hooks/useAudioPlayer";
@@ -50,16 +52,20 @@ const FONT = "sans-serif";
 
 const DIVIDER_HEIGHT = 0.3;
 const CONTENT_H_PADDING = 20;
-const HEADER_SPACER = 90;
-
+const HEADER_SPACER = 70;
+const PINNED_ITEM_SIZE = 98;
 const LOADER_COLOR = "#f92c47";
-const LOADER_HEIGHT = 2.5;
-const LOADER_TRACK_ALPHA = 0.28;
 
 const PLAYLIST_PREVIEW_LIMIT = 4;
 
 const MIN_LOADER_VISIBLE_MS = 120;
 const TAG_WAIT_MS = 400;
+
+// ── Edit Categories animation config ───────────────────────────────
+const EDIT_ENTER_MS = 380;
+const EDIT_EXIT_MS = 280;
+const EDIT_STAGGER_MS = 70;
+const EDIT_MIN_OFFSET = 48;
 
 export const LibraryIcon = ({
   color = "#fff",
@@ -112,67 +118,42 @@ export const AlbumsSvgIcon = ({
   </Svg>
 );
 
-const HorizontalLoader = React.memo(function HorizontalLoader({
-  color = LOADER_COLOR,
-  height = LOADER_HEIGHT,
-}: {
-  color?: string;
-  height?: number;
-}) {
-  const [trackW, setTrackW] = useState(200);
-  const slide = useRef(new Animated.Value(0)).current;
+// 🟢 NEW: Custom Circular Loader to replace the old horizontal one
+const LibrarySpinner = () => {
+  const rotate = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (trackW <= 0) return;
-    slide.setValue(0);
     const loop = Animated.loop(
-      Animated.timing(slide, {
+      Animated.timing(rotate, {
         toValue: 1,
-        duration: 1200,
-        easing: Easing.inOut(Easing.quad),
+        duration: 800,
         useNativeDriver: true,
         isInteraction: false,
       }),
     );
     loop.start();
-    return () => {
-      loop.stop();
-      slide.setValue(0);
-    };
-  }, [trackW, slide]);
+    return () => loop.stop();
+  }, [rotate]);
 
-  const barW = Math.max(trackW * 0.35, 40);
-  const translateX = slide.interpolate({
+  const spin = rotate.interpolate({
     inputRange: [0, 1],
-    outputRange: [-barW, trackW],
+    outputRange: ["0deg", "360deg"],
   });
 
   return (
-    <View
-      onLayout={(e) => {
-        const w = e.nativeEvent.layout.width;
-        if (w > 0 && Math.abs(w - trackW) > 0.5) setTrackW(w);
-      }}
+    <Animated.View
       style={{
-        width: "100%",
-        height,
-        borderRadius: height / 2,
-        overflow: "hidden",
-        backgroundColor: `rgba(249,44,71,${LOADER_TRACK_ALPHA})`,
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        borderWidth: 3,
+        borderColor: LOADER_COLOR,
+        borderTopColor: "transparent",
+        transform: [{ rotate: spin }],
       }}
-    >
-      <Animated.View
-        style={{
-          width: barW,
-          height,
-          borderRadius: height / 2,
-          backgroundColor: color,
-          transform: [{ translateX }],
-        }}
-      />
-    </View>
+    />
   );
-});
+};
 
 const DEFAULT_COLORS = {
   background: "#000000",
@@ -184,7 +165,7 @@ const DEFAULT_COLORS = {
   text: "#ffffff",
   textSecondary: "#a1a1aa",
   textMuted: "#71717a",
-  primary: "#f92c47",
+  iconsColour: "#f92c47",
 };
 
 const SPACING = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 };
@@ -337,6 +318,133 @@ type MergedItem =
   | { kind: "playlist"; key: string; ts: number; playlist: UserPlaylist }
   | { kind: "fav"; key: string; ts: number };
 
+const AnimatedPinnedArt = ({
+  isEditingPins,
+  size,
+  children,
+}: {
+  isEditingPins: boolean;
+  size: number;
+  children: React.ReactNode;
+}) => {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(scale, {
+      toValue: isEditingPins ? 0.78 : 1,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 60,
+    }).start();
+  }, [isEditingPins, scale]);
+
+  return (
+    <View
+      style={{
+        width: size,
+        minHeight: size + 24,
+        alignItems: "center",
+        justifyContent: "flex-start",
+      }}
+    >
+      <Animated.View
+        style={{
+          width: size,
+          alignItems: "center",
+          transform: [{ scale }],
+        }}
+      >
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
+const EditRowAnimated = ({
+  index,
+  count,
+  offset,
+  exiting,
+  children,
+}: {
+  index: number;
+  count: number;
+  offset: number;
+  exiting: boolean;
+  children: React.ReactNode;
+}) => {
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: EDIT_ENTER_MS,
+      delay: index * EDIT_STAGGER_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, []);
+
+  useEffect(() => {
+    if (!exiting) return;
+    const anim = Animated.timing(progress, {
+      toValue: 0,
+      duration: EDIT_EXIT_MS,
+      delay: (count - 1 - index) * EDIT_STAGGER_MS,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [exiting]);
+
+  const translateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [offset, 0],
+  });
+  const opacity = progress.interpolate({
+    inputRange: [0, 0.4, 1],
+    outputRange: [0, 0.7, 1],
+  });
+
+  return (
+    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+      {children}
+    </Animated.View>
+  );
+};
+
+const FadeInView = ({ children }: { children: React.ReactNode }) => {
+  const o = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(o, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [o]);
+  return <Animated.View style={{ opacity: o }}>{children}</Animated.View>;
+};
+
+const UNKNOWN_ALBUM = "Unknown album";
+
+const cleanAlbumName = (raw?: string | null, fallback = ""): string => {
+  if (!raw) return fallback;
+  const s = String(raw)
+    .replace(/[\(\[\{<][^\)\]\}>]*[\)\]\}>]/g, " ")
+    .replace(/\bwww\.[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi, " ")
+    .replace(
+      /\b[a-z0-9-]+\.(?:com|net|org|in|co|se|pk|info|me|cc|xyz|live|fm|io|app|tv|club|site|online)\b/gi,
+      " ",
+    )
+    .replace(/[\s_\-–—|:@~•·]+/g, " ")
+    .trim();
+  return s || fallback;
+};
+
 export default function LibraryScreen() {
   const nav = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -373,6 +481,8 @@ export default function LibraryScreen() {
   const [imageMenuOpen, setImageMenuOpen] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
+  const [editExiting, setEditExiting] = useState(false);
+  const pinnedHeightRef = useRef(0);
   const [items, setItems] = useState<any[]>(DEFAULT_ITEMS);
   const [visibleMap, setVisibleMap] =
     useState<Record<string, boolean>>(INITIAL_VISIBLE);
@@ -390,12 +500,19 @@ export default function LibraryScreen() {
 
   const [contextSong, setContextSong] = useState<any | null>(null);
   const [sheetVisible, setSheetVisible] = useState(false);
+
+  const [contextPlaylist, setContextPlaylist] = useState<UserPlaylist | null>(
+    null,
+  );
+  const [playlistSheetVisible, setPlaylistSheetVisible] = useState(false);
+
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const mounted = useRef(true);
 
   const [scanning, setScanning] = useState(songs.length === 0);
+  const [refreshing, setRefreshing] = useState(false);
   const scanStarted = useRef(false);
 
   const [tagsReady, setTagsReady] = useState(
@@ -457,6 +574,23 @@ export default function LibraryScreen() {
       if (mounted.current) setUserPlaylists([]);
     }
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await scanAll?.();
+      await loadSavedLibraryConfig();
+      await loadPinnedSongs();
+      await loadUserPlaylists();
+      showToast("Library refreshed");
+    } catch (e) {
+      console.warn("[Library] Refresh failed:", e);
+      showToast("Could not refresh library");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [scanAll, refreshing, loadUserPlaylists]);
 
   useFocusEffect(
     useCallback(() => {
@@ -606,15 +740,31 @@ export default function LibraryScreen() {
     }
   };
 
-  const handleEditPress = () => setIsEditing(true);
+  const handleEditPress = () => {
+    setEditExiting(false);
+    setIsEditing(true);
+  };
 
   const handleDonePress = async () => {
+    if (editExiting) return;
     await saveLibraryConfig();
-    setIsEditing(false);
+    setEditExiting(true);
+
+    const total =
+      EDIT_EXIT_MS + Math.max(0, items.length - 1) * EDIT_STAGGER_MS + 40;
+
+    setTimeout(() => {
+      if (!mounted.current) return;
+      setIsEditing(false);
+      setEditExiting(false);
+    }, total);
   };
 
   const toggleEditMode = useCallback(() => {
-    if (isEditingPins) setIsEditingPins(false);
+    if (isEditingPins) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setIsEditingPins(false);
+    }
     if (isEditing) {
       handleDonePress();
     } else {
@@ -623,6 +773,8 @@ export default function LibraryScreen() {
   }, [isEditing, isEditingPins, handleDonePress]);
 
   const enterEditPins = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
     if (isEditing) setIsEditing(false);
     setEditPinnedSongIds({ ...pinnedSongIds });
     const plMap: Record<string, boolean> = {};
@@ -636,6 +788,7 @@ export default function LibraryScreen() {
   }, [isEditing, pinnedSongIds, userPlaylists]);
 
   const removePinnedSongInEdit = useCallback((song: any) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     const id = song.id || song._id;
     if (!id) return;
     setEditPinnedSongIds((prev) => {
@@ -646,6 +799,7 @@ export default function LibraryScreen() {
   }, []);
 
   const removePinnedPlaylistInEdit = useCallback((pl: any) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     if (!pl?.id) return;
     setEditPinnedPlaylistIds((prev) => {
       const next = { ...prev };
@@ -655,6 +809,8 @@ export default function LibraryScreen() {
   }, []);
 
   const savePins = useCallback(async () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
     try {
       const validSongIds: Record<string, boolean> = {};
       Object.keys(editPinnedSongIds).forEach((id) => {
@@ -692,12 +848,7 @@ export default function LibraryScreen() {
     } finally {
       setIsEditingPins(false);
     }
-  }, [
-    editPinnedSongIds,
-    editPinnedPlaylistIds,
-    songs,
-    loadUserPlaylists,
-  ]);
+  }, [editPinnedSongIds, editPinnedPlaylistIds, songs, loadUserPlaylists]);
 
   const toggleVisible = (id: string) => {
     setVisibleMap((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -819,7 +970,7 @@ export default function LibraryScreen() {
     if (item.type === "star") {
       return (
         <StarFillIcon
-          color={item.tint ?? COLORS.primary}
+          color={item.tint ?? COLORS.iconsColour}
           size={item.size ?? 18}
         />
       );
@@ -827,7 +978,7 @@ export default function LibraryScreen() {
     if (item.type === "albumsvg") {
       return (
         <AlbumsSvgIcon
-          color={item.tint ?? COLORS.primary}
+          color={item.tint ?? COLORS.iconsColour}
           size={item.size ?? 24}
         />
       );
@@ -837,14 +988,14 @@ export default function LibraryScreen() {
       return (
         <Svg width={size} height={size} viewBox="3.5 4 17 16" fill="none">
           <Path
-            fill={COLORS.primary}
+            fill={COLORS.iconsColour}
             d="M18.39 9.42c1.289-1.282 1.34-2.908.102-4.139-1.23-1.216-2.85-1.186-4.138.103zm-6.08 9.858a.66.66 0 0 0 .667-.667v-4.328l-.051-1.048 2.234-2.072c.842.11 1.728-.235 2.49-1.004l-4.03-4.035c-.776.761-1.098 1.633-.988 2.475l-6.805 7.332c-.278.3-.322.717.022 1.062L4.913 18.2a.31.31 0 0 0 .037.418l.212.22a.31.31 0 0 0 .425.029l1.208-.945c.33.344.755.3 1.048.022l3.8-3.516v4.182a.66.66 0 0 0 .667.667zm-5.053-2.073-.674-.674 6.453-6.84q.186.307.461.593.274.276.571.476z"
           />
         </Svg>
       );
     }
     if (item.type === "png" || item.type === "song") {
-      const tint = item.tint ?? COLORS.primary;
+      const tint = item.tint ?? COLORS.iconsColour;
       const size = item.size ?? 22;
       return (
         <Image
@@ -858,37 +1009,49 @@ export default function LibraryScreen() {
     return <Text style={{ fontSize: 18 }}>📁</Text>;
   };
 
-  const renderEditRow = ({ item, drag, isActive }: any) => {
+  const renderEditRow = ({ item, drag, isActive, getIndex }: any) => {
     const checked = visibleMap[item.id] !== false;
+    const index = typeof getIndex === "function" ? (getIndex() ?? 0) : 0;
+
+    const offset = Math.max(pinnedHeightRef.current, EDIT_MIN_OFFSET);
 
     return (
       <ScaleDecorator>
-        <TouchableOpacity
-          activeOpacity={0.9}
-          onLongPress={drag}
-          disabled={isActive}
-          style={[styles.editRow, isActive && styles.editRowActive]}
+        <EditRowAnimated
+          index={index}
+          count={items.length}
+          offset={offset}
+          exiting={editExiting}
         >
           <TouchableOpacity
-            onPress={() => toggleVisible(item.id)}
-            style={styles.checkboxTouch}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            activeOpacity={0.9}
+            onLongPress={drag}
+            disabled={isActive}
+            style={[styles.editRow, isActive && styles.editRowActive]}
           >
-            <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-              {checked && <Text style={styles.checkmark}>✓</Text>}
+            <TouchableOpacity
+              onPress={() => toggleVisible(item.id)}
+              style={styles.checkboxTouch}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <View
+                style={[styles.checkbox, checked && styles.checkboxChecked]}
+              >
+                {checked && <Text style={styles.checkmark}>✓</Text>}
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.iconWrapper}>{renderIcon(item)}</View>
+
+            <Text style={styles.rowLabel}>{item.label}</Text>
+
+            <View style={styles.dragHandle}>
+              <View style={styles.dragLine} />
+              <View style={styles.dragLine} />
+              <View style={styles.dragLine} />
             </View>
           </TouchableOpacity>
-
-          <View style={styles.iconWrapper}>{renderIcon(item)}</View>
-
-          <Text style={styles.rowLabel}>{item.label}</Text>
-
-          <View style={styles.dragHandle}>
-            <View style={styles.dragLine} />
-            <View style={styles.dragLine} />
-            <View style={styles.dragLine} />
-          </View>
-        </TouchableOpacity>
+        </EditRowAnimated>
       </ScaleDecorator>
     );
   };
@@ -919,7 +1082,7 @@ export default function LibraryScreen() {
   const pinnedSongs = useMemo(() => {
     return songs.filter((s: any) => pinnedSongIds[s.id || s._id]);
   }, [songs, pinnedSongIds]);
-
+  const hasAnyPins = pinnedSongs.length > 0 || pinnedPlaylists.length > 0;
   const displayPinnedSongs = useMemo(() => {
     if (!isEditingPins) return pinnedSongs;
     return songs.filter((s: any) => editPinnedSongIds[s.id || s._id]);
@@ -932,19 +1095,25 @@ export default function LibraryScreen() {
 
   const navigateToAlbum = useCallback(
     (song: any) => {
-      const albumName = String(song?.album ?? "").trim();
-      if (!albumName) {
-        showToast("Album info unavailable");
-        return;
-      }
+      const albumOf = (s: any): string => {
+        const id = s.id || s._id;
+        const raw =
+          (tagData as any)?.[id]?.album ??
+          getCachedTags(id)?.album ??
+          (typeof s.album === "string" ? s.album : undefined);
+        return cleanAlbumName(raw, UNKNOWN_ALBUM);
+      };
 
-      const sameAlbum = songs.filter(
-        (s: any) =>
-          String(s?.album || "")
-            .trim()
-            .toLowerCase() === albumName.toLowerCase(),
-      );
-      const songIds = sameAlbum.map((s: any) => s.id).filter(Boolean);
+      const albumName = albumOf(song);
+      const target = albumName.toLowerCase();
+      const isUnknown = target === UNKNOWN_ALBUM.toLowerCase();
+
+      const songIds = isUnknown
+        ? [song.id || song._id]
+        : songs
+            .filter((s: any) => albumOf(s).toLowerCase() === target)
+            .map((s: any) => s.id || s._id)
+            .filter(Boolean);
 
       nav.navigate("AlbumDetails", {
         albumName,
@@ -952,10 +1121,10 @@ export default function LibraryScreen() {
         artwork:
           (song as any).artwork ??
           (song as any).artworkUri ??
-          artworkMap[song.id],
+          artworkMap[song.id || song._id],
       });
     },
-    [songs, artworkMap, nav],
+    [songs, artworkMap, nav, tagData],
   );
 
   const renderPinnedSection = () => {
@@ -965,21 +1134,10 @@ export default function LibraryScreen() {
 
     if (isEmpty && !isEditingPins) return null;
 
+    const layoutSize = PINNED_ITEM_SIZE;
+
     return (
       <View style={styles.pinnedSection}>
-        {isEditingPins && (
-          <View style={styles.editPinsBar}>
-            <Text style={styles.editModeLabel}>Edit Pins</Text>
-            <TouchableOpacity
-              onPress={savePins}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.editPinsSave}>✓</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
         {isEmpty ? (
           <Text style={styles.noPinsText}>No pinned items yet.</Text>
         ) : (
@@ -987,15 +1145,13 @@ export default function LibraryScreen() {
             {songList.map((s: any) => {
               const sid = s.id || s._id;
               const art =
-                (s as any).artwork ??
-                (s as any).artworkUri ??
-                artworkMap[sid];
+                (s as any).artwork ?? (s as any).artworkUri ?? artworkMap[sid];
 
               return (
                 <TouchableOpacity
                   key={`pinned_song_${sid}`}
                   activeOpacity={isEditingPins ? 1 : 0.75}
-                  style={styles.pinnedCard}
+                  style={[styles.pinnedCard, { width: layoutSize }]}
                   onPress={() => {
                     if (isEditingPins) return;
                     navigateToAlbum(s);
@@ -1010,35 +1166,50 @@ export default function LibraryScreen() {
                   }
                   delayLongPress={350}
                 >
-                  <View style={styles.pinnedArt}>
-                    {art ? (
-                      <Image
-                        source={{ uri: art }}
-                        style={styles.pinnedArtImg}
-                        resizeMode="cover"
-                        fadeDuration={0}
-                      />
-                    ) : (
-                      <View style={styles.pinnedFallbackArt}>
-                        <DefaultSongArt style={styles.pinnedArtImg} />
-                      </View>
-                    )}
-
-                    {isEditingPins && (
-                      <TouchableOpacity
-                        style={styles.minusBadge}
-                        onPress={() => removePinnedSongInEdit(s)}
-                        hitSlop={10}
-                        activeOpacity={0.8}
+                  <AnimatedPinnedArt
+                    isEditingPins={isEditingPins}
+                    size={layoutSize}
+                  >
+                    <View style={{ alignItems: "center" }}>
+                      <View
+                        style={[
+                          styles.pinnedArt,
+                          { width: layoutSize, height: layoutSize },
+                        ]}
                       >
-                        <Text style={styles.minusBadgeText}>−</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
+                        {art ? (
+                          <Image
+                            source={{ uri: art }}
+                            style={styles.pinnedArtImg}
+                            resizeMode="cover"
+                            fadeDuration={0}
+                          />
+                        ) : (
+                          <View style={styles.pinnedFallbackArt}>
+                            <DefaultSongArt style={styles.pinnedArtImg} />
+                          </View>
+                        )}
+                      </View>
 
-                  <Text style={styles.pinnedName} numberOfLines={1}>
-                    {s.title || "Unknown"}
-                  </Text>
+                      <Text
+                        style={[styles.pinnedName, { width: layoutSize }]}
+                        numberOfLines={1}
+                      >
+                        {s.title || "Unknown"}
+                      </Text>
+                    </View>
+                  </AnimatedPinnedArt>
+
+                  {isEditingPins && (
+                    <TouchableOpacity
+                      style={styles.minusBadge}
+                      onPress={() => removePinnedSongInEdit(s)}
+                      hitSlop={10}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.minusBadgeText}>−</Text>
+                    </TouchableOpacity>
+                  )}
                 </TouchableOpacity>
               );
             })}
@@ -1047,41 +1218,68 @@ export default function LibraryScreen() {
               <TouchableOpacity
                 key={`pinned_${pl.id}`}
                 activeOpacity={isEditingPins ? 1 : 0.75}
-                style={styles.pinnedCard}
+                style={[styles.pinnedCard, { width: layoutSize }]}
                 onPress={() => {
                   if (isEditingPins) return;
                   nav.navigate("PlaylistDetails", { playlistId: pl.id });
                 }}
+                onLongPress={
+                  isEditingPins
+                    ? undefined
+                    : () => {
+                        setContextPlaylist(pl);
+                        setPlaylistSheetVisible(true);
+                      }
+                }
+                delayLongPress={350}
               >
-                <View style={styles.pinnedArt}>
-                  {pl.artwork ? (
-                    <Image
-                      source={{ uri: pl.artwork }}
-                      style={styles.pinnedArtImg}
-                      resizeMode="cover"
-                      fadeDuration={0}
-                    />
-                  ) : (
-                    <View style={styles.pinnedFallbackArt}>
-                      <UserPlaylistIcon size={70} color={COLORS.inactive} />
-                    </View>
-                  )}
-
-                  {isEditingPins && (
-                    <TouchableOpacity
-                      style={styles.minusBadge}
-                      onPress={() => removePinnedPlaylistInEdit(pl)}
-                      hitSlop={10}
-                      activeOpacity={0.8}
+                <AnimatedPinnedArt
+                  isEditingPins={isEditingPins}
+                  size={layoutSize}
+                >
+                  <View style={{ alignItems: "center" }}>
+                    <View
+                      style={[
+                        styles.pinnedArt,
+                        { width: layoutSize, height: layoutSize },
+                      ]}
                     >
-                      <Text style={styles.minusBadgeText}>−</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+                      {pl.artwork ? (
+                        <Image
+                          source={{ uri: pl.artwork }}
+                          style={styles.pinnedArtImg}
+                          resizeMode="cover"
+                          fadeDuration={0}
+                        />
+                      ) : (
+                        <View style={styles.pinnedFallbackArt}>
+                          <UserPlaylistIcon
+                            size={layoutSize * 0.7}
+                            color={COLORS.inactive}
+                          />
+                        </View>
+                      )}
+                    </View>
 
-                <Text style={styles.pinnedName} numberOfLines={1}>
-                  {pl.name}
-                </Text>
+                    <Text
+                      style={[styles.pinnedName, { width: layoutSize }]}
+                      numberOfLines={1}
+                    >
+                      {pl.name}
+                    </Text>
+                  </View>
+                </AnimatedPinnedArt>
+
+                {isEditingPins && (
+                  <TouchableOpacity
+                    style={styles.minusBadge}
+                    onPress={() => removePinnedPlaylistInEdit(pl)}
+                    hitSlop={10}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.minusBadgeText}>−</Text>
+                  </TouchableOpacity>
+                )}
               </TouchableOpacity>
             ))}
           </View>
@@ -1191,7 +1389,6 @@ export default function LibraryScreen() {
   const handleDeleteSong = useCallback(async () => {
     if (!contextSong || deleting) return;
     const id = contextSong.id || contextSong._id;
-    const uri = contextSong.uri || contextSong.path;
     if (!id) {
       setDeleteConfirmVisible(false);
       setSheetVisible(false);
@@ -1210,34 +1407,29 @@ export default function LibraryScreen() {
         } catch {}
       }
 
-          // 🔥 FIX: Instantly update PlayerStore and stop audio
-         // 🔥 FIX: Instantly update PlayerStore and stop native background audio
-           // 🔥 FIX: Instantly update PlayerStore and stop native background audio
       try {
         const ps: any = usePlayerStore.getState();
         if (ps?.currentTrack && String(ps.currentTrack.id) === String(id)) {
-          
-          // Force native TrackPlayer to stop and clear the queue
           try {
-            await TrackPlayer.reset(); 
-          } catch (e) {
-            console.log("TrackPlayer reset error:", e);
-          }
-
-          // Fallback to hook methods
-          try { await audio?.stop?.(); } catch (e) {}
-          
-          // Clear React Store
-          if (typeof ps.setCurrentTrack === "function") ps.setCurrentTrack(null);
+            await TrackPlayer.stop();
+          } catch (e) {}
+          try {
+            await (TrackPlayer as any).removeUpcomingTracks?.();
+          } catch {}
+          try {
+            await audio?.pause?.();
+          } catch (e) {}
+          if (typeof ps.setCurrentTrack === "function")
+            ps.setCurrentTrack(null);
           if (typeof ps.setIsPlaying === "function") ps.setIsPlaying(false);
           if (typeof ps.clearQueue === "function") ps.clearQueue();
         } else if (Array.isArray(ps.queue)) {
-          const newQueue = ps.queue.filter((s: any) => String(s.id) !== String(id));
+          const newQueue = ps.queue.filter(
+            (s: any) => String(s.id) !== String(id),
+          );
           if (typeof ps.setQueue === "function") ps.setQueue(newQueue);
         }
-      } catch (e) {
-        console.warn("[LibraryScreen] Failed to reset player:", e);
-      }
+      } catch (e) {}
 
       const store = useMediaStore.getState() as any;
       const nextSongs = (store.songs || []).filter(
@@ -1268,9 +1460,7 @@ export default function LibraryScreen() {
             await loadUserPlaylists();
           }
         }
-      } catch (e) {
-        console.warn("[Library] playlist cleanup failed:", e);
-      }
+      } catch (e) {}
 
       if (pinnedSongIds[id]) {
         const next = { ...pinnedSongIds };
@@ -1302,6 +1492,72 @@ export default function LibraryScreen() {
     loadUserPlaylists,
     pinnedSongIds,
   ]);
+
+  const handleTogglePinPlaylist = async () => {
+    if (!contextPlaylist) return;
+    const id = contextPlaylist.id;
+    const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
+    if (raw) {
+      const pls = JSON.parse(raw);
+      if (Array.isArray(pls)) {
+        const updated = pls.map((pl: any) =>
+          pl.id === id ? { ...pl, pinned: !pl.pinned } : pl,
+        );
+        await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(updated));
+        await loadUserPlaylists();
+        showToast(
+          !contextPlaylist.pinned ? "Pinned Playlist" : "Unpinned Playlist",
+        );
+      }
+    }
+    setPlaylistSheetVisible(false);
+    setContextPlaylist(null);
+  };
+
+  const handleToggleFavouritePlaylist = async () => {
+    if (!contextPlaylist) return;
+    const id = contextPlaylist.id;
+    const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
+    if (raw) {
+      const pls = JSON.parse(raw);
+      if (Array.isArray(pls)) {
+        const updated = pls.map((pl: any) =>
+          pl.id === id ? { ...pl, favourite: !pl.favourite } : pl,
+        );
+        await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(updated));
+        await loadUserPlaylists();
+        showToast(
+          !contextPlaylist.favourite
+            ? "Added to Favourites"
+            : "Removed from Favourites",
+        );
+      }
+    }
+    setPlaylistSheetVisible(false);
+    setContextPlaylist(null);
+  };
+
+  const handleAddPlaylistToQueue = () => {
+    if (!contextPlaylist || !contextPlaylist.songs) return;
+    try {
+      const st: any = usePlayerStore.getState();
+      let added = 0;
+      contextPlaylist.songs.forEach((s: any) => {
+        const fn = st.addToQueue ?? st.enqueue;
+        if (typeof fn === "function") {
+          fn(s);
+          added++;
+        }
+      });
+      showToast(
+        added > 0 ? `Added ${added} songs to queue` : "No songs to queue",
+      );
+    } catch {
+      showToast("Could not add to queue");
+    }
+    setPlaylistSheetVisible(false);
+    setContextPlaylist(null);
+  };
 
   const renderGridItem = (entry: MergedItem, cardWidth: number) => {
     if (entry.kind === "fav") {
@@ -1354,6 +1610,11 @@ export default function LibraryScreen() {
           activeOpacity={0.75}
           style={[styles.gridCard, { width: cardWidth }]}
           onPress={() => nav.navigate("PlaylistDetails", { playlistId: pl.id })}
+          onLongPress={() => {
+            setContextPlaylist(pl);
+            setPlaylistSheetVisible(true);
+          }}
+          delayLongPress={350}
         >
           <View
             style={[
@@ -1397,9 +1658,7 @@ export default function LibraryScreen() {
     const songId = song.id || song._id;
     const isCurrent = currentSong?.id === songId;
     const artwork =
-      (song as any).artwork ??
-      (song as any).artworkUri ??
-      artworkMap[songId];
+      (song as any).artwork ?? (song as any).artworkUri ?? artworkMap[songId];
 
     const taggedArtist = tagData[songId]?.artist;
     const artist =
@@ -1426,7 +1685,7 @@ export default function LibraryScreen() {
               width: cardWidth,
               height: cardWidth,
               backgroundColor: COLORS.surface,
-              borderColor: isCurrent ? COLORS.primary : "transparent",
+              borderColor: isCurrent ? COLORS.iconsColour : "transparent",
             },
           ]}
         >
@@ -1450,7 +1709,7 @@ export default function LibraryScreen() {
                 width: 26,
                 height: 26,
                 borderRadius: 13,
-                backgroundColor: COLORS.primary,
+                backgroundColor: COLORS.iconsColour,
                 alignItems: "center",
                 justifyContent: "center",
               }}
@@ -1472,7 +1731,7 @@ export default function LibraryScreen() {
           numberOfLines={1}
           style={[
             styles.gridTitle,
-            { color: isCurrent ? COLORS.primary : COLORS.text },
+            { color: isCurrent ? COLORS.iconsColour : COLORS.text },
           ]}
         >
           {song.title || "Unknown"}
@@ -1528,8 +1787,10 @@ export default function LibraryScreen() {
         fontFamily="sans-serif"
         onEditCategories={toggleEditMode}
         onEditPins={enterEditPins}
+        hasPins={hasAnyPins}
+        isEditing={isEditing || isEditingPins}
+        onDonePress={isEditing ? handleDonePress : savePins}
       />
-
       <Animated.ScrollView
         contentContainerStyle={[
           styles.content,
@@ -1541,24 +1802,32 @@ export default function LibraryScreen() {
         scrollEventThrottle={16}
         style={{ opacity: showLoading ? 0 : 1 }}
         pointerEvents={showLoading ? "none" : "auto"}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={COLORS.iconsColour}
+            colors={[COLORS.iconsColour]}
+            progressBackgroundColor={COLORS.surface}
+            progressViewOffset={HEADER_SPACER + insets.top + 10}
+          />
+        }
       >
-        {!isEditing && renderPinnedSection()}
+        {!isEditing && (
+          <View
+            onLayout={(e) => {
+              pinnedHeightRef.current = e.nativeEvent.layout.height;
+            }}
+          >
+            <FadeInView>{renderPinnedSection()}</FadeInView>
+          </View>
+        )}
 
         {isEditing ? (
           <View style={styles.editListWrapper}>
-            <View style={styles.editDoneRow}>
-              <Text style={styles.editModeLabel}>Edit Categories</Text>
-              <TouchableOpacity
-                onPress={handleDonePress}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.editBtn}>Done</Text>
-              </TouchableOpacity>
-            </View>
-
             <DraggableFlatList
               data={items}
+              extraData={editExiting}
               keyExtractor={(item: any) => item.id}
               renderItem={renderEditRow}
               onDragEnd={onDragEnd}
@@ -1566,8 +1835,6 @@ export default function LibraryScreen() {
               activationDistance={5}
             />
           </View>
-        ) : isEditingPins ? (
-          null
         ) : (
           <View style={styles.list}>
             {visibleItems.map((item, index) => renderNormalRow(item, index))}
@@ -1575,19 +1842,18 @@ export default function LibraryScreen() {
           </View>
         )}
 
-        {!isEditing && !isEditingPins && renderRecentlyAdded()}
-
+        {!isEditing && renderRecentlyAdded()}
         <View style={{ height: 180 }} />
       </Animated.ScrollView>
 
+      {/* 🟢 NEW: Custom Circular Loader replacing the old HorizontalLoader */}
       {showLoading && (
         <View pointerEvents="none" style={styles.loaderOverlay}>
-          <View style={styles.loaderBox}>
-            <HorizontalLoader />
-          </View>
+          <LibrarySpinner />
         </View>
       )}
 
+      {/* Song Options Sheet */}
       <Modal
         visible={sheetVisible}
         transparent
@@ -1682,6 +1948,96 @@ export default function LibraryScreen() {
         </View>
       </Modal>
 
+      {/* Playlist Options Sheet */}
+      <Modal
+        visible={playlistSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setPlaylistSheetVisible(false);
+          setContextPlaylist(null);
+        }}
+      >
+        <View style={styles.sheetRoot}>
+          <TouchableOpacity
+            style={styles.sheetBackdrop}
+            activeOpacity={1}
+            onPress={() => {
+              setPlaylistSheetVisible(false);
+              setContextPlaylist(null);
+            }}
+          />
+          <View style={styles.songSheet}>
+            <View style={styles.sheetHandle} />
+
+            {contextPlaylist && (
+              <>
+                <View style={styles.songHeader}>
+                  {contextPlaylist.artwork ? (
+                    <Image
+                      source={{ uri: contextPlaylist.artwork }}
+                      style={styles.songHeaderArt}
+                      resizeMode="cover"
+                      fadeDuration={0}
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.songHeaderArt,
+                        {
+                          alignItems: "center",
+                          justifyContent: "center",
+                        },
+                      ]}
+                    >
+                      <UserPlaylistIcon size={30} color={COLORS.inactive} />
+                    </View>
+                  )}
+                  <View style={styles.songHeaderText}>
+                    <Text numberOfLines={1} style={styles.songHeaderTitle}>
+                      {contextPlaylist.name}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.songHeaderArtist}>
+                      {contextPlaylist.songs?.length || 0} songs
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.sheetDivider} />
+
+                <TouchableOpacity
+                  style={styles.sheetRow}
+                  activeOpacity={0.7}
+                  onPress={handleTogglePinPlaylist}
+                >
+                  <Text style={styles.sheetRowText}>
+                    {contextPlaylist.pinned ? "Unpin Playlist" : "Pin Playlist"}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.sheetRow}
+                  activeOpacity={0.7}
+                  onPress={handleAddPlaylistToQueue}
+                >
+                  <Text style={styles.sheetRowText}>Add to Queue</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.sheetRow}
+                  activeOpacity={0.7}
+                  onPress={handleToggleFavouritePlaylist}
+                >
+                  <Text style={styles.sheetRowText}>
+                    {contextPlaylist.favourite ? "Undo favourite" : "Favourite"}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={deleteConfirmVisible}
         transparent
@@ -1692,9 +2048,9 @@ export default function LibraryScreen() {
           <View style={styles.confirmCard}>
             <Text style={styles.confirmTitle}>Delete Song</Text>
             <Text style={styles.confirmBody}>
-              Are you sure you want to delete this album from your library?
-              This also removes songs from your favourites and from any
-              playlist you made.
+              Are you sure you want to delete this album from your library? This
+              also removes songs from your favourites and from any playlist you
+              made.
             </Text>
 
             <TouchableOpacity
@@ -1755,7 +2111,7 @@ export default function LibraryScreen() {
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
                 {creating ? (
-                  <ActivityIndicator color={COLORS.primary} size="small" />
+                  <ActivityIndicator color={COLORS.text} size="small" />
                 ) : (
                   <Text style={styles.checkIcon}>✓</Text>
                 )}
@@ -1841,7 +2197,6 @@ export default function LibraryScreen() {
         </View>
       </Modal>
 
-      {/* 👇 Added TopStatusGlass overlay for the edge-to-edge fade */}
       <TopStatusGlass />
     </View>
   );
@@ -1857,12 +2212,13 @@ const createStyles = (COLORS: any) =>
     },
 
     editBtn: {
-      color: COLORS.primary,
+      color: COLORS.iconsColour,
       fontSize: 17,
       fontWeight: "600",
       fontFamily: FONT,
     },
 
+    // 🟢 CHANGED: Loader overlay is now a simple full-screen flexbox
     loaderOverlay: {
       position: "absolute",
       top: 0,
@@ -1871,32 +2227,12 @@ const createStyles = (COLORS: any) =>
       bottom: 0,
       alignItems: "center",
       justifyContent: "center",
-    },
-    loaderBox: {
-      width: 220,
-      paddingHorizontal: 16,
-      paddingVertical: 14,
-      borderRadius: 10,
-      backgroundColor: "rgba(0,0,0,0.55)",
+      zIndex: 9999,
     },
 
     pinnedSection: {
       marginTop: 0,
       marginBottom: 4,
-    },
-    editPinsBar: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      paddingVertical: 6,
-      marginBottom: 10,
-    },
-    editPinsSave: {
-      color: COLORS.primary,
-      fontSize: 24,
-      fontWeight: "900",
-      fontFamily: FONT,
-      lineHeight: 26,
     },
     noPinsText: {
       color: COLORS.textSecondary,
@@ -1910,10 +2246,10 @@ const createStyles = (COLORS: any) =>
       flexWrap: "wrap",
       gap: 12,
     },
-    pinnedCard: { width: 84 },
+    pinnedCard: { width: PINNED_ITEM_SIZE },
     pinnedArt: {
-      width: 90,
-      height: 90,
+      width: PINNED_ITEM_SIZE,
+      height: PINNED_ITEM_SIZE,
       borderRadius: 6,
       overflow: "hidden",
       backgroundColor: COLORS.surface,
@@ -1938,41 +2274,25 @@ const createStyles = (COLORS: any) =>
       fontFamily: FONT,
       textAlign: "center",
     },
-    pinnedSongPin: {
-      position: "absolute",
-      top: 4,
-      right: 4,
-      width: 20,
-      height: 20,
-      borderRadius: 10,
-      backgroundColor: COLORS.primary,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    pinnedSongPinText: { color: "#fff", fontSize: 10, fontWeight: "700" },
 
     minusBadge: {
       position: "absolute",
-      top: 4,
-      right: 4,
+      top: -6,
+      left: -6,
       width: 24,
       height: 24,
       borderRadius: 12,
-      backgroundColor: "#E53935",
+      backgroundColor: "#6b6b6b",
       alignItems: "center",
       justifyContent: "center",
       borderWidth: 1.5,
-      borderColor: "#ffffff",
-      shadowColor: "#000",
-      shadowOpacity: 0.35,
-      shadowRadius: 3,
-      shadowOffset: { width: 0, height: 1 },
-      elevation: 3,
+      borderColor: COLORS.background,
+      zIndex: 10,
     },
     minusBadgeText: {
       color: "#ffffff",
       fontSize: 20,
-      fontWeight: "900",
+      fontWeight: "500",
       lineHeight: 22,
       marginTop: -2,
       fontFamily: FONT,
@@ -2055,8 +2375,8 @@ const createStyles = (COLORS: any) =>
       backgroundColor: "transparent",
     },
     checkboxChecked: {
-      backgroundColor: COLORS.primary,
-      borderColor: COLORS.primary,
+      backgroundColor: COLORS.iconsColour,
+      borderColor: COLORS.iconsColour,
     },
     checkmark: {
       color: "#fff",
@@ -2270,7 +2590,7 @@ const createStyles = (COLORS: any) =>
       fontFamily: FONT,
     },
     checkIcon: {
-      color: COLORS.primary,
+      color: COLORS.iconsColour,
       fontSize: 26,
       fontWeight: "700",
       fontFamily: FONT,
@@ -2349,7 +2669,7 @@ const createStyles = (COLORS: any) =>
     imageSheetTitle: {
       color: COLORS.text,
       fontSize: 17,
-      fontWeight: "600",
+      fontWeight: "500",
       marginBottom: 12,
       fontFamily: FONT,
     },

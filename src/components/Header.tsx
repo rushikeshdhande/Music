@@ -18,11 +18,14 @@ import Svg, { Path } from "react-native-svg";
 
 import { useTheme } from "../hooks/useTheme";
 import { showToast } from "../utils/toast";
-// 👇 Import global font family
 import { APP_FONT_FAMILY } from "../utils/globalFont";
-
+import { GlassBG } from "./GlassCard";
+import { blurTargetRef } from "../navigation/blurTarget";
+import { MenuIcon, PinSongIcon } from "../icons/Icons";
 const DEFAULT_FONT = APP_FONT_FAMILY;
 const PLUS_ICON = require("../../assets/icons/createplaylisticona.png");
+
+const POPUP_WIDTH = 160;
 
 const DEFAULT_COLORS = {
   background: "#000000",
@@ -57,8 +60,10 @@ type HeaderProps = {
   fontFamily?: string;
   onEditPins?: () => void;
   onEditCategories?: () => void;
+  isEditing?: boolean;
+  onDonePress?: () => void;
+  hasPins?: boolean; // ← new
 };
-
 export default function Header({
   title = "Home",
   scrollY,
@@ -66,6 +71,9 @@ export default function Header({
   fontFamily = DEFAULT_FONT,
   onEditPins,
   onEditCategories,
+  isEditing = false,
+  onDonePress,
+  hasPins = false,
 }: HeaderProps) {
   const nav = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -80,6 +88,8 @@ export default function Header({
           ? themeRaw.theme
           : {};
   const COLORS = { ...DEFAULT_COLORS, ...base };
+
+  const isDark = !!COLORS.isDark;
 
   const headerTitleOpacity = scrollY.interpolate({
     inputRange: [0, 30],
@@ -104,9 +114,9 @@ export default function Header({
   const dropdownOpacity = useRef(new Animated.Value(0)).current;
   const menuClosing = useRef(false);
 
-  const hasEditPins = typeof onEditPins === "function";
+  const hasEditPins = typeof onEditPins === "function" && hasPins;
   const hasEditCategories = typeof onEditCategories === "function";
-  const hasOptionsSection = hasEditPins || hasEditCategories;
+  const hasOptionsSection = (hasEditPins || hasEditCategories) && !isEditing;
 
   useEffect(() => {
     if (!showMenu) return;
@@ -185,19 +195,119 @@ export default function Header({
     [closeMenu, navigateTo],
   );
 
-  const isDark = !!COLORS.isDark;
-
-  // ✅ Glass background inside the buttons
-  const glassBg = isDark ? "rgba(255, 255, 255, 0.15)" : "rgba(0, 0, 0, 0.08)";
-  const glassBorder = isDark
-    ? "rgba(255, 255, 255, 0.3)"
-    : "rgba(0, 0, 0, 0.15)";
-
-  const dropdownBg = COLORS.popupColour ?? COLORS.surface;
   const dropdownBorder = COLORS.border;
   const dropdownShadow = isDark
-    ? { color: "#000", opacity: 0.35, radius: 16, elevation: 18 }
-    : { color: "#000", opacity: 0.12, radius: 12, elevation: 6 };
+    ? { color: "#000", opacity: 0.35, radius: 16, elevation: 0 }
+    : { color: "#000", opacity: 0.12, radius: 12, elevation: 0 };
+
+  // Text color forced to pure white/black
+  const menuTextColor = isDark ? "#ffffff" : "#000000";
+
+  // ── Menu rows (shared by Android + iOS popup) ────────────────
+  const renderMenuItems = (textColor: string) => (
+    <ScrollView
+      style={{ maxHeight: 400 }}
+      showsVerticalScrollIndicator={false}
+      bounces={false}
+    >
+      <Pressable
+        onPress={(e) => e.stopPropagation()}
+        style={{ paddingVertical: 6 }}
+      >
+        {hasOptionsSection && (
+          <>
+            {hasEditPins && !isEditing && (
+              <TouchableOpacity
+                style={[styles.dropdownRow, styles.dropdownRowWithIcon]}
+                activeOpacity={0.7}
+                onPress={() => runOrNavigate(onEditPins, "EditPins")}
+              >
+                <PinSongIcon size={25} color={textColor} />
+                <Text
+                  style={[
+                    styles.dropdownLabel,
+                    styles.dropdownLabelWithIcon,
+                    { color: textColor },
+                  ]}
+                >
+                  Edit Pins
+                </Text>
+              </TouchableOpacity>
+            )}
+
+          {hasEditCategories && !isEditing && (
+  <TouchableOpacity
+    style={[styles.dropdownRow, styles.dropdownRowWithIcon]}
+    activeOpacity={0.7}
+    onPress={() => runOrNavigate(onEditCategories, "EditCategories")}
+  >
+    <MenuIcon size={21} color={textColor} />
+    <Text
+      style={[
+        styles.dropdownLabel,
+        styles.dropdownLabelWithIcon,
+        { color: textColor },
+      ]}
+    >
+      Edit Categories
+    </Text>
+  </TouchableOpacity>
+)}
+            <View
+              style={[styles.divider, { backgroundColor: COLORS.border }]}
+            />
+          </>
+        )}
+
+        <TouchableOpacity
+          style={styles.dropdownRow}
+          activeOpacity={0.7}
+          onPress={() => closeMenu(() => navigateTo("Settings"))}
+        >
+          <Text style={[styles.dropdownLabel, { color: textColor }]}>
+            Settings
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.dropdownRow}
+          activeOpacity={0.7}
+          onPress={() => closeMenu(() => navigateTo("Account"))}
+        >
+          <Text style={[styles.dropdownLabel, { color: textColor }]}>
+            Account
+          </Text>
+        </TouchableOpacity>
+      </Pressable>
+    </ScrollView>
+  );
+
+  // ⬇️ Frosted glass popup (real blur on both Android + iOS) + warm tint
+  const renderPopupCard = () => {
+    const popupTint = isDark
+      ? "rgba(214, 208, 208, 0.03)"
+      : "rgba(82, 80, 80, 0)";
+
+    return (
+      <GlassBG
+        radius={12}
+        lightMode={!isDark}
+        blurTarget={blurTargetRef}
+        settings={{
+          tintOpacity: isDark ? 0.02 : 0.4,
+          frostBlur: 5,
+          distortionStrength: 55,
+        }}
+        style={{ flex: 1 }}
+      >
+        <View
+          style={[StyleSheet.absoluteFill, { backgroundColor: popupTint }]}
+          pointerEvents="none"
+        />
+        {renderMenuItems(menuTextColor)}
+      </GlassBG>
+    );
+  };
 
   return (
     <>
@@ -214,7 +324,6 @@ export default function Header({
           ]}
         />
 
-        {/* 👇 BUG FIX: Replaced marginTop: 40 with dynamic insets.top */}
         <View style={[styles.header, { marginTop: insets.top + 10 }]}>
           <Animated.Text
             style={[
@@ -231,36 +340,97 @@ export default function Header({
           </Animated.Text>
 
           <View style={styles.headerRight}>
-            {onPlusPress ? (
+            {/* ✅ Done button — exits edit mode via header */}
+            {isEditing && onDonePress ? (
               <TouchableOpacity
-                onPress={onPlusPress}
-                style={[
-                  styles.topIconBtn,
-                  { backgroundColor: glassBg, borderColor: glassBorder },
-                ]}
+                onPress={onDonePress}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ marginRight: 8 }}
                 activeOpacity={0.7}
               >
-                <Image
-                  source={PLUS_ICON}
-                  style={[styles.plusIconImage, { tintColor: COLORS.primary }]} 
-                  resizeMode="contain"
-                  fadeDuration={0}
-                />
+                <Text
+                  style={{
+                    color: COLORS.primary,
+                    fontSize: 16,
+                    fontWeight: "600",
+                    fontFamily,
+                  }}
+                >
+                  Done
+                </Text>
               </TouchableOpacity>
             ) : null}
 
-            <TouchableOpacity
-              onPress={() => setShowMenu(true)}
-              style={[
-                styles.headerBtn,
-                { backgroundColor: glassBg, borderColor: glassBorder },
-              ]}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              activeOpacity={0.7}
+            {onPlusPress ? (
+              <GlassBG
+                radius={20}
+                lightMode={!isDark}
+                blurTarget={blurTargetRef}
+                settings={{
+                  tintOpacity: isDark ? 0.15 : 0.83,
+                  frostBlur: 22,
+                  distortionStrength: 55,
+                }}
+                style={{
+                  width: 40,
+                  height: 40,
+                  marginLeft: 8,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <TouchableOpacity
+                  onPress={onPlusPress}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  activeOpacity={0.7}
+                >
+                  <Image
+                    source={PLUS_ICON}
+                    style={[styles.plusIconImage, { tintColor: COLORS.text }]}
+                    resizeMode="contain"
+                    fadeDuration={0}
+                  />
+                </TouchableOpacity>
+              </GlassBG>
+            ) : null}
+
+            <GlassBG
+              radius={20}
+              lightMode={!isDark}
+              blurTarget={blurTargetRef}
+              settings={{
+                tintOpacity: isDark ? 0.35 : 0.55,
+                frostBlur: 22,
+                distortionStrength: 55,
+              }}
+              style={{
+                width: 40,
+                height: 40,
+                marginLeft: 8,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
             >
-              <MoreIcon size={22} color={COLORS.text} /> 
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setShowMenu(true)}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                activeOpacity={0.7}
+              >
+                <MoreIcon size={22} color={COLORS.text} />
+              </TouchableOpacity>
+            </GlassBG>
           </View>
         </View>
       </View>
@@ -279,7 +449,7 @@ export default function Header({
               {
                 top: insets.top + 50,
                 right: 16,
-                backgroundColor: dropdownBg,
+                width: POPUP_WIDTH,
                 borderColor: dropdownBorder,
                 opacity: dropdownOpacity,
                 transform: [{ scale: dropdownScale }],
@@ -291,74 +461,10 @@ export default function Header({
               } as any,
             ]}
           >
-            <ScrollView
-              style={{ maxHeight: 400 }}
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-            >
-              <Pressable onPress={(e) => e.stopPropagation()}>
-                {hasOptionsSection && (
-                  <>
-                    {hasEditPins && (
-                      <TouchableOpacity
-                        style={styles.dropdownRow}
-                        activeOpacity={0.7}
-                        onPress={() => runOrNavigate(onEditPins, "EditPins")}
-                      >
-                        <Text
-                          style={[styles.dropdownLabel, { color: COLORS.text }]}
-                        >
-                          Edit Pins
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-
-                    {hasEditCategories && (
-                      <TouchableOpacity
-                        style={styles.dropdownRow}
-                        activeOpacity={0.7}
-                        onPress={() =>
-                          runOrNavigate(onEditCategories, "EditCategories")
-                        }
-                      >
-                        <Text
-                          style={[styles.dropdownLabel, { color: COLORS.text }]}
-                        >
-                          Edit Categories
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-
-                    <View
-                      style={[
-                        styles.divider,
-                        { backgroundColor: COLORS.border },
-                      ]}
-                    />
-                  </>
-                )}
-
-                <TouchableOpacity
-                  style={styles.dropdownRow}
-                  activeOpacity={0.7}
-                  onPress={() => closeMenu(() => navigateTo("Settings"))}
-                >
-                  <Text style={[styles.dropdownLabel, { color: COLORS.text }]}>
-                    Settings
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.dropdownRow}
-                  activeOpacity={0.7}
-                  onPress={() => closeMenu(() => navigateTo("Account"))}
-                >
-                  <Text style={[styles.dropdownLabel, { color: COLORS.text }]}>
-                    Account
-                  </Text>
-                </TouchableOpacity>
-              </Pressable>
-            </ScrollView>
+            {/* ✅ Inner Pressable captures taps so the backdrop doesn't fire */}
+            <Pressable onPress={(e) => e.stopPropagation()} style={{ flex: 1 }}>
+              {renderPopupCard()}
+            </Pressable>
           </Animated.View>
         </Pressable>
       </Modal>
@@ -386,7 +492,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    // 👇 Removed marginTop: 40 from here (now handled dynamically inside JSX)
     marginBottom: 0,
   },
   headerTitle: {
@@ -398,24 +503,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
   },
-  // 👇 Ensured no shadow props exist here to prevent the "ring" bug
-  headerBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 8,
-  },
-  topIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
   plusIconImage: {
     width: 21,
     height: 21,
@@ -423,23 +510,29 @@ const styles = StyleSheet.create({
   dropdownBackdrop: {
     flex: 1,
     backgroundColor: "transparent",
+    elevation: 1,
   },
   dropdownCard: {
     position: "absolute",
-    width: 200,
     borderRadius: 12,
-    paddingVertical: 8,
     borderWidth: StyleSheet.hairlineWidth,
     shadowOffset: { width: 0, height: 8 },
     overflow: "hidden",
   },
   dropdownRow: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  dropdownRowWithIcon: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   dropdownLabel: {
     fontSize: 15,
     fontWeight: "500",
+  },
+  dropdownLabelWithIcon: {
+    marginLeft: 10,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

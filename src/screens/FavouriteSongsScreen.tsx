@@ -44,7 +44,6 @@ import { Song } from "../types";
 import { ShuffleIcon, PlayIcon } from "../icons/Icons";
 import { getCachedTags } from "../services/audioTags/tagService";
 
-import MiniPlayer from "../components/MiniPlayer";
 
 const FONT = "sans-serif";
 const STORAGE_PLAYLISTS = "@library_playlists";
@@ -1161,10 +1160,7 @@ export default function FavouriteSongsScreen() {
         </View>
       </View>
 
-      {/* ---------------- MINI PLAYER ---------------- */}
-      <View style={styles.bottomArea} pointerEvents="box-none">
-        <MiniPlayer />
-      </View>
+ 
 
       {/* ---------------- 3-DOT BOTTOM-SHEET POPUP ---------------- */}
       <Modal

@@ -229,19 +229,47 @@ const RadioStack = createNativeStackNavigator();
 const SearchStack = createNativeStackNavigator();
 
 // ---------------------------------------------------------------------------
-// Navigators (Unchanged)
+// Navigators
 // ---------------------------------------------------------------------------
 function HomeStackNavigator() {
   return (
     <HomeStack.Navigator id="HomeStack" screenOptions={{ headerShown: false }}>
       <HomeStack.Screen name="HomeMain" component={HomeScreen} />
-      <HomeStack.Screen name="Songs" component={SongsScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="Albums" component={AlbumScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="AlbumDetails" component={AlbumDetailsScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="FavouriteSongs" component={FavouriteSongsScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="MusicVideos" component={MusicVideosScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="Artists" component={ArtistsScreen} options={{ animation: "slide_from_right" }} />
-      <HomeStack.Screen name="ArtistDetails" component={ArtistDetailsScreen} options={{ animation: "slide_from_right" }} />
+      <HomeStack.Screen
+        name="Songs"
+        component={SongsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="Albums"
+        component={AlbumScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="AlbumDetails"
+        component={AlbumDetailsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="FavouriteSongs"
+        component={FavouriteSongsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="MusicVideos"
+        component={MusicVideosScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="Artists"
+        component={ArtistsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <HomeStack.Screen
+        name="ArtistDetails"
+        component={ArtistDetailsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
     </HomeStack.Navigator>
   );
 }
@@ -256,7 +284,10 @@ function NewStackNavigator() {
 
 function RadioStackNavigator() {
   return (
-    <RadioStack.Navigator id="RadioStack" screenOptions={{ headerShown: false }}>
+    <RadioStack.Navigator
+      id="RadioStack"
+      screenOptions={{ headerShown: false }}
+    >
       <RadioStack.Screen name="RadioMain" component={RadioScreen} />
     </RadioStack.Navigator>
   );
@@ -264,7 +295,10 @@ function RadioStackNavigator() {
 
 function SearchStackNavigator() {
   return (
-    <SearchStack.Navigator id="SearchStack" screenOptions={{ headerShown: false }}>
+    <SearchStack.Navigator
+      id="SearchStack"
+      screenOptions={{ headerShown: false }}
+    >
       <SearchStack.Screen name="SearchMain" component={SearchScreen} />
     </SearchStack.Navigator>
   );
@@ -272,17 +306,56 @@ function SearchStackNavigator() {
 
 function LibraryStackNavigator() {
   return (
-    <LibraryStack.Navigator id="LibraryStack" screenOptions={{ headerShown: false }}>
+    <LibraryStack.Navigator
+      id="LibraryStack"
+      screenOptions={{ headerShown: false }}
+    >
       <LibraryStack.Screen name="LibraryMain" component={LibraryScreen} />
-      <LibraryStack.Screen name="Songs" component={SongsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="Albums" component={AlbumScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="AlbumDetails" component={AlbumDetailsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="Playlists" component={PlaylistsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="PlaylistDetails" component={PlaylistDetailsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="FavouriteSongs" component={FavouriteSongsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="MusicVideos" component={MusicVideosScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="Artists" component={ArtistsScreen} options={{ animation: "slide_from_right" }} />
-      <LibraryStack.Screen name="ArtistDetails" component={ArtistDetailsScreen} options={{ animation: "slide_from_right" }} />
+      <LibraryStack.Screen
+        name="Songs"
+        component={SongsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="Albums"
+        component={AlbumScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="AlbumDetails"
+        component={AlbumDetailsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="Playlists"
+        component={PlaylistsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="PlaylistDetails"
+        component={PlaylistDetailsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="FavouriteSongs"
+        component={FavouriteSongsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="MusicVideos"
+        component={MusicVideosScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="Artists"
+        component={ArtistsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
+      <LibraryStack.Screen
+        name="ArtistDetails"
+        component={ArtistDetailsScreen}
+        options={{ animation: "slide_from_right" }}
+      />
     </LibraryStack.Navigator>
   );
 }
@@ -342,19 +415,20 @@ function TabButton({
   const animatedRippleColor = useSharedValue<string>(rippleColor);
   const s = item.style;
 
-  const entryStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(entryProgress.value, [0, 1], [0, 1]),
-    transform: [
-      {
-        translateX: interpolate(
-          entryProgress.value,
-          [0, 1],
-          [360, 0],
-          Extrapolation.CLAMP,
-        ),
-      },
-    ],
-  }));
+  const entryStyle = useAnimatedStyle(() => {
+    const v = entryProgress.value;
+    // Fast-Refresh safety: if the shared value isn't a number yet, treat
+    // it as fully visible so icons never disappear.
+    const safe = Number.isFinite(v) ? v : 1;
+    return {
+      opacity: interpolate(safe, [0, 0.3, 1], [0, 1, 1], Extrapolation.CLAMP),
+      transform: [
+        {
+          translateX: interpolate(safe, [0, 1], [360, 0], Extrapolation.CLAMP),
+        },
+      ],
+    };
+  });
 
   const rippleStyle = useAnimatedStyle(
     (): ViewStyle => ({
@@ -401,7 +475,9 @@ function TabButton({
         />
       </View>
 
-      <View style={[styles.iconWrap, { marginBottom: s.iconMarginBottom ?? 0 }]}>
+      <View
+        style={[styles.iconWrap, { marginBottom: s.iconMarginBottom ?? 0 }]}
+      >
         {item.icon(color, s.size)}
       </View>
 
@@ -423,7 +499,7 @@ function TabButton({
 }
 
 // ---------------------------------------------------------------------------
-// Tab bar
+// Glass tab bar
 // ---------------------------------------------------------------------------
 type GlassTabBarProps = {
   activeIndex: number;
@@ -431,6 +507,10 @@ type GlassTabBarProps = {
   onPress: (name: NavItemName, tabIndex: number) => void;
   blurTarget?: React.RefObject<any>;
 };
+
+// Module-level flag: survives Fast Refresh, so the slide-in entrance
+// only plays on a genuine cold start (not on every reload).
+let hasPlayedEntranceOnce = false;
 
 function GlassTabBar({
   activeIndex,
@@ -443,8 +523,14 @@ function GlassTabBar({
   const bottomOffset = insets.bottom + getNavbarBottomMargin();
   const navbarHeight = getNavbarHeight();
 
-  const navEntryProgress = useSharedValue(0);
+  const navEntryProgress = useSharedValue(hasPlayedEntranceOnce ? 1 : 0);
+
   useEffect(() => {
+    if (hasPlayedEntranceOnce) {
+      navEntryProgress.value = 1;
+      return;
+    }
+    hasPlayedEntranceOnce = true;
     navEntryProgress.value = withTiming(1, {
       duration: 900,
       easing: Easing.out(Easing.cubic),
@@ -507,10 +593,7 @@ function GlassTabBar({
             },
           ],
           shadowColor: "#000000",
-          shadowOffset: {
-            width: 0,
-            height: -8,
-          },
+          shadowOffset: { width: 0, height: -8 },
           shadowOpacity: isDark ? 0.28 : 0.18,
           shadowRadius: 18,
           elevation: 18,
@@ -540,8 +623,13 @@ function GlassTabBar({
       <View style={styles.tabsLayer}>
         {TAB_ITEMS.map((item) => {
           const isActive = item.tabIndex === shownIndex;
-          const contentColor = isActive ? theme.primary : theme.textSecondary;
-
+          // Active tab keeps the red highlight. Inactive tabs are white in
+          // dark mode and black in light mode.
+          const contentColor = isActive
+            ? theme.primary
+            : isDark
+              ? "#FFFFFF"
+              : "#000000";
           return (
             <TabButton
               key={item.name}
@@ -550,9 +638,7 @@ function GlassTabBar({
               isActive={isActive}
               color={contentColor}
               rippleColor={isActive ? NORMAL_RIPPLE_COLOR : FIRST_RIPPLE_COLOR}
-              onSelect={() => {
-                setPendingIndex(item.tabIndex);
-              }}
+              onSelect={() => setPendingIndex(item.tabIndex)}
               onPress={() => onPress(item.name, item.tabIndex)}
             />
           );
@@ -562,6 +648,9 @@ function GlassTabBar({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Tabs (screen layer + MiniPlayer + tab bar)
+// ---------------------------------------------------------------------------
 function Tabs() {
   const theme = useTheme();
 
@@ -601,8 +690,6 @@ function Tabs() {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.background }}>
-      {/* ✅ FIXED: Added collapsable={false} so Android doesn't destroy the view 
-          and actually provides a valid ref for the BlurView to target */}
       <TargetView ref={blurTargetRef} style={{ flex: 1 }} collapsable={false}>
         <Tab.Navigator
           id="MainTabs"
@@ -639,6 +726,9 @@ function Tabs() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Root navigator
+// ---------------------------------------------------------------------------
 export default function RootNavigator() {
   const theme = useTheme();
   const [ready, setReady] = useState(false);
@@ -668,9 +758,7 @@ export default function RootNavigator() {
       } catch (error) {
         console.error("[RootNavigator] Initialization failed:", error);
       } finally {
-        if (mounted) {
-          setReady(true);
-        }
+        if (mounted) setReady(true);
       }
     }
 
@@ -841,6 +929,6 @@ const styles = StyleSheet.create({
   label: {
     fontWeight: "600",
     textAlign: "center",
-    fontFamily: APP_FONT_FAMILY, 
+    fontFamily: APP_FONT_FAMILY,
   },
 });

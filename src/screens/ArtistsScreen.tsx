@@ -94,7 +94,7 @@ export default function ArtistsScreen() {
         onPress={() => nav.navigate("ArtistDetails", { artistName: item.name })}
       >
         <View style={[styles.artWrap, { backgroundColor: theme.surface }]}>
-          <ArtistPlaceholder color={theme.primary} size={30} />
+          <ArtistPlaceholder color={theme.iconsColour} size={30} />
         </View>
         <View style={styles.info}>
           <Text numberOfLines={1} style={[styles.name, { color: theme.text }]}>
@@ -104,7 +104,7 @@ export default function ArtistsScreen() {
             {item.songs.length} {item.songs.length === 1 ? "song" : "songs"}
           </Text>
         </View>
-        {isFav && <StarFillIcon color={theme.primary} size={14} />}
+        {isFav && <StarFillIcon color={theme.iconsColour} size={14} />}
       </TouchableOpacity>
     );
   };
@@ -186,19 +186,19 @@ export default function ArtistsScreen() {
                 style={styles.menuRow}
                 onPress={() => { setMenuVisible(false); setFilterMode("all"); }}
               >
-                <Text style={[styles.menuText, { color: filterMode === "all" ? theme.primary : theme.text }]}>
+                <Text style={[styles.menuText, { color: filterMode === "all" ? theme.iconsColour : theme.text }]}>
                   All Artist
                 </Text>
-                {filterMode === "all" && <Text style={{ color: theme.primary, fontSize: 16 }}>✓</Text>}
+                {filterMode === "all" && <Text style={{ color: theme.iconsColour, fontSize: 16 }}>✓</Text>}
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.menuRow}
                 onPress={() => { setMenuVisible(false); setFilterMode("favourites"); }}
               >
-                <Text style={[styles.menuText, { color: filterMode === "favourites" ? theme.primary : theme.text }]}>
+                <Text style={[styles.menuText, { color: filterMode === "favourites" ? theme.iconsColour : theme.text }]}>
                   Favourites
                 </Text>
-                {filterMode === "favourites" && <Text style={{ color: theme.primary, fontSize: 16 }}>✓</Text>}
+                {filterMode === "favourites" && <Text style={{ color: theme.iconsColour, fontSize: 16 }}>✓</Text>}
               </TouchableOpacity>
             </Pressable>
           </View>

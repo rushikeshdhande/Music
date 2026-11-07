@@ -13,6 +13,7 @@ import {
   Pressable,
   LayoutChangeEvent,
   useWindowDimensions,
+  Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { VideoView } from "expo-video";
@@ -41,7 +42,7 @@ import {
 } from "../icons/VideoIcons";
 import { SF, iosWeight } from "./playerShared";
 
-// â”€â”€ Shared assets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Shared assets ───────────────────────────────────────────────────────────
 const STAR_ICON = require("../../assets/icons/star-icon.png");
 const FAVOURITED_ICON = require("../../assets/images/favourited.png");
 const MUTE_SPEAKER = require("../../assets/images/mutespecker.png");
@@ -53,13 +54,13 @@ const ARTIST_SCROLL_MIN_WORDS = 4;
 
 const SKIP_BG = "rgba(70,70,70,0.55)";
 
-// âœ… Time the chrome (title / controls / progress) stays visible after tap
+// ✅ Time the chrome (title / controls / progress) stays visible after tap
 const CHROME_VISIBLE_MS = 5000;
-// âœ… Hide / show animation
+// ✅ Hide / show animation
 const CHROME_ANIM_MS = 260;
 const CHROME_SLIDE_DISTANCE = 40;
 
-// â”€â”€ ProgressBar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ProgressBar ─────────────────────────────────────────────────────────────
 const ProgressBar = ({
   position = 0,
   duration = 0,
@@ -167,7 +168,7 @@ const barStyles = StyleSheet.create({
   },
 });
 
-// â”€â”€ BoldStar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── BoldStar ────────────────────────────────────────────────────────────────
 const BoldStar = ({
   size = 20,
   thickness = 0.7,
@@ -210,7 +211,7 @@ const BoldStar = ({
   );
 };
 
-// â”€â”€ Marquee â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Marquee ─────────────────────────────────────────────────────────────────
 type MarqueeLine = {
   text: string;
   style: any;
@@ -348,7 +349,7 @@ const MarqueeTexts = ({
   );
 };
 
-// â”€â”€ RippleButton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── RippleButton ────────────────────────────────────────────────────────────
 const RippleButton = ({
   onPress,
   children,
@@ -419,7 +420,7 @@ const RippleButton = ({
   );
 };
 
-// â”€â”€ PlayerControlsBlock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── PlayerControlsBlock ─────────────────────────────────────────────────────
 type PlayerControlsBlockProps = {
   songId: string | number;
   title: string;
@@ -469,6 +470,48 @@ const PlayerControlsBlock = ({
     ? "rgba(255,255,255,0.6)"
     : theme.textSecondary;
 
+  // State for the dummy cast popup
+  // State for the dummy cast popup
+  const [castModalVisible, setCastModalVisible] = useState(false);
+  const [castState, setCastState] = useState<
+    "searching" | "wifi_help" | "no_devices"
+  >("searching");
+  const castLoadingAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (castModalVisible) {
+      setCastState("searching");
+      castLoadingAnim.setValue(0);
+
+      // Start the loading animation loop
+      Animated.loop(
+        Animated.timing(castLoadingAnim, {
+          toValue: 1,
+          duration: 1500,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: false,
+        }),
+      ).start();
+
+      // 1. After 2.5s -> switch to "wifi_help"
+      const timer1 = setTimeout(() => {
+        setCastState("wifi_help");
+      }, 2500);
+
+      // 2. After 5.5s -> switch to "no_devices"
+      const timer2 = setTimeout(() => {
+        setCastState("no_devices");
+        castLoadingAnim.stopAnimation(); // Stop loading bar here
+      }, 5500);
+
+      return () => {
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+      };
+    } else {
+      castLoadingAnim.stopAnimation();
+    }
+  }, [castModalVisible, castLoadingAnim]);
   return (
     <View>
       <View style={blockStyles.infoContainer}>
@@ -608,7 +651,7 @@ const PlayerControlsBlock = ({
 
         <TouchableOpacity
           style={blockStyles.bottomBtn}
-          onPress={() => showToast("Cast feature soon...")}
+          onPress={() => setCastModalVisible(true)} // Opens the dummy popup
           activeOpacity={0.7}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
@@ -624,6 +667,103 @@ const PlayerControlsBlock = ({
           <QueueIcon size={23} color={bottomIconColor} />
         </TouchableOpacity>
       </View>
+
+      {/* ── DUMMY CAST POPUP ────────────────────────────────────────────── */}
+      {/* ── DUMMY CAST POPUP ────────────────────────────────────────────── */}
+      <Modal
+        visible={castModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCastModalVisible(false)}
+      >
+        <Pressable
+          style={castStyles.backdrop}
+          onPress={() => setCastModalVisible(false)}
+        >
+          <Pressable
+            style={castStyles.card}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {/* Header Title */}
+            <Text style={castStyles.title}>
+              {castState === "no_devices" ? "No devices available" : "Cast to"}
+            </Text>
+
+            {/* Body area: switches between states */}
+            <View style={castStyles.bodyRow}>
+              {castState === "searching" ? (
+                // 1. Searching State
+                <View
+                  style={{ flex: 1, justifyContent: "center", minHeight: 44 }}
+                >
+                  <Text style={castStyles.bodyText}>
+                    Looking for devices...
+                  </Text>
+                </View>
+              ) : (
+                // 2. Wi-Fi Help & No Devices State
+                <>
+                  <View style={castStyles.wifiIconWrap}>
+                    <View style={castStyles.wifiDot} />
+                    <View style={castStyles.wifiArc1} />
+                    <View style={castStyles.wifiArc2} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={castStyles.bodyText}>
+                      Make sure the other device is on the same Wi-Fi network as
+                      this phone
+                    </Text>
+
+                    {/* Learn More link (Only for no_devices state) */}
+                    {castState === "no_devices" && (
+                      <TouchableOpacity
+                        onPress={() => showToast("Help docs coming soon")}
+                        style={{ marginTop: 12 }}
+                      >
+                        <Text style={castStyles.learnMoreText}>Learn more</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </>
+              )}
+            </View>
+
+            {/* Bottom Area: Loading Bar OR OK Button */}
+            {castState !== "no_devices" ? (
+              // Animated Loading Bar (visible during searching and wifi_help)
+              <View style={castStyles.loadingTrack}>
+                <Animated.View
+                  style={[
+                    castStyles.loadingBar,
+                    {
+                      transform: [
+                        {
+                          translateX: castLoadingAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [-100, 340],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                />
+              </View>
+            ) : (
+              // OK Button (visible only in no_devices state)
+              <View style={castStyles.okButtonWrap}>
+                <TouchableOpacity
+                  onPress={() => setCastModalVisible(false)}
+                  style={castStyles.okButton}
+                  activeOpacity={0.7}
+                >
+                  <Text style={castStyles.okButtonText}>OK</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+      {/* ────────────────────────────────────────────────────────────────── */}
     </View>
   );
 };
@@ -711,8 +851,124 @@ const blockStyles = StyleSheet.create({
     justifyContent: "center",
   },
 });
+// ── Dummy Cast Popup Styles ─────────────────────────────────────────────────
+const castStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 340,
+    backgroundColor: "#2C2C2E", // Dark grey like native popups
+    borderRadius: 14,
+    padding: 24,
+    paddingBottom: 20,
+  },
+  title: {
+    color: "#FFFFFF",
+    fontSize: 22,
+    fontWeight: "700",
+    marginBottom: 20,
+  },
+  bodyRow: {
+    flexDirection: "row",
+    alignItems: "flex-start", // Changed to flex-start to handle multi-line text
+    marginBottom: 24,
+    minHeight: 44,
+  },
+  wifiIconWrap: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 16,
+    position: "relative",
+    marginTop: 2, // Slight adjustment to align with text
+  },
+  wifiDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#FFFFFF",
+    position: "absolute",
+    bottom: 8,
+  },
+  wifiArc1: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+    borderBottomColor: "transparent",
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    position: "absolute",
+    bottom: 4,
+    transform: [{ rotate: "-45deg" }],
+  },
+  wifiArc2: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+    borderBottomColor: "transparent",
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    position: "absolute",
+    bottom: 0,
+    transform: [{ rotate: "-45deg" }],
+  },
+  bodyText: {
+    flex: 1,
+    color: "#FFFFFF",
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  learnMoreText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    textDecorationLine: "underline",
+  },
+  loadingTrack: {
+    width: "100%",
+    height: 6,
+    backgroundColor: "#3A3A3C",
+    borderRadius: 3,
+    overflow: "hidden",
+    position: "relative",
+    marginTop: 8,
+  },
+  loadingBar: {
+    width: "40%",
+    height: "100%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 3,
+    position: "absolute",
+    left: 0,
+  },
+  okButtonWrap: {
+    alignItems: "flex-end",
+    marginTop: 16,
+  },
+  okButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginRight: -8, // align with the right edge of the card padding
+  },
+  okButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "500",
+  },
+});
+// ────────────────────────────────────────────────────────────────────────────
 
-// â”€â”€ ExpandedPreview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ExpandedPreview ─────────────────────────────────────────────────────────
 export const ExpandedPreview = ({
   itemKey,
   isVideo,
@@ -772,7 +1028,7 @@ export const ExpandedPreview = ({
   );
 };
 
-// â”€â”€ SpinSkipButton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── SpinSkipButton ──────────────────────────────────────────────────────────
 const SpinSkipButton = ({
   direction,
   onPress,
@@ -843,10 +1099,7 @@ const SpinSkipButton = ({
   );
 };
 
-// â”€â”€ ProgressSection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Bottom block layout (top â†’ bottom):
-//   title â†’ artist â†’ progress bar â†’ time row
-// âœ… When chrome hides, this whole block slides DOWN and fades to opacity 0
+// ── ProgressSection ─────────────────────────────────────────────────────────
 const ProgressSection = React.memo(function ProgressSection({
   isLandscape,
   insets,
@@ -870,7 +1123,7 @@ const ProgressSection = React.memo(function ProgressSection({
 
   const translateY = chromeAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [CHROME_SLIDE_DISTANCE, 0], // hidden â†’ pushed down
+    outputRange: [CHROME_SLIDE_DISTANCE, 0],
   });
 
   return (
@@ -879,8 +1132,8 @@ const ProgressSection = React.memo(function ProgressSection({
         fs.bottom,
         {
           bottom: insets.bottom + (isLandscape ? 26 : 44),
-          left: insets.left + (isLandscape ? 28 : 28),   // â† controls left edge
-      right: insets.right + (isLandscape ? 28 : 28), // â† controls right edge
+          left: insets.left + (isLandscape ? 28 : 28),
+          right: insets.right + (isLandscape ? 28 : 28),
           opacity: chromeAnim,
           transform: [{ translateY }],
         },
@@ -913,15 +1166,19 @@ const ProgressSection = React.memo(function ProgressSection({
   );
 });
 
-// â”€â”€ FullscreenPlayer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── FullscreenPlayer ────────────────────────────────────────────────────────
 export const FullscreenPlayer = React.memo(function FullscreenPlayer({
   title,
   artist,
+  bgColor,
+  thumbUri,
   onClose,
   onCollapse,
 }: {
   title: string;
   artist: string;
+  bgColor?: string;
+  thumbUri?: string | null;
   onClose: () => void;
   onCollapse: () => void;
 }) {
@@ -938,17 +1195,16 @@ export const FullscreenPlayer = React.memo(function FullscreenPlayer({
   const onSkip = useVideoBridge((s) => s.skip);
   const onSeek = useVideoBridge((s) => s.seekTo);
 
-  // âœ… Local echo of play/pause so the icon flips even if the bridge is
-// Use actual playback state from the video bridge
-const isPlaying = bridgeIsPlaying;
+  const isPlaying = bridgeIsPlaying;
 
-const handlePlayPause = useCallback(() => {
-  try {
-    onTogglePlay();
-  } catch (error) {
-    console.warn("[Fullscreen] Play/pause failed:", error);
-  }
-}, [onTogglePlay]);
+  const handlePlayPause = useCallback(() => {
+    try {
+      onTogglePlay();
+    } catch (error) {
+      console.warn("[Fullscreen] Play/pause failed:", error);
+    }
+  }, [onTogglePlay]);
+
   const collapseRef = useRef(onCollapse);
   collapseRef.current = onCollapse;
   const heightRef = useRef(win.height);
@@ -1002,11 +1258,10 @@ const handlePlayPause = useCallback(() => {
 
   const isLandscape = win.width > win.height;
 
-  // â”€â”€ Chrome show / hide â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Chrome show / hide ─────────────────────────────────────────────────────
   const [show, setShow] = useState(true);
   const autoHide = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 1 = fully visible, 0 = hidden (top moved up, bottom moved down, opacity 0)
   const chromeAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -1042,16 +1297,15 @@ const handlePlayPause = useCallback(() => {
       if (autoHide.current) clearTimeout(autoHide.current);
       setShow(false);
     } else if (isPlaying) {
-      bump(); // show again and restart the auto-hide timer
+      bump();
     } else {
       setShow(true);
     }
   }, [show, isPlaying, bump]);
 
-  // Interpolations
   const topTranslateY = chromeAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [-CHROME_SLIDE_DISTANCE, 0], // hidden â†’ pushed up
+    outputRange: [-CHROME_SLIDE_DISTANCE, 0],
   });
 
   const playSize = isLandscape ? 96 : 92;
@@ -1081,12 +1335,10 @@ const handlePlayPause = useCallback(() => {
         ) : null}
       </Pressable>
 
-      {/* âœ… Always mounted. When hidden, touches pass through to the video */}
       <View
         style={StyleSheet.absoluteFill}
         pointerEvents={show ? "box-none" : "none"}
       >
-        {/* dim overlay */}
         <Animated.View
           style={[
             StyleSheet.absoluteFill,
@@ -1095,7 +1347,6 @@ const handlePlayPause = useCallback(() => {
           pointerEvents="none"
         />
 
-        {/* â”€â”€ CENTRE PLAY / SKIP (fade only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         <Animated.View
           style={[fs.centerRow, { opacity: chromeAnim }]}
           pointerEvents="box-none"
@@ -1147,8 +1398,6 @@ const handlePlayPause = useCallback(() => {
           </View>
         </Animated.View>
 
-        {/* â”€â”€ TOP BAR: cross (left) + speaker (right) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
-        {/* âœ… hides by moving UP + opacity 0 */}
         <Animated.View
           style={[
             fs.topRow,
@@ -1193,8 +1442,6 @@ const handlePlayPause = useCallback(() => {
           </TouchableOpacity>
         </Animated.View>
 
-        {/* â”€â”€ BOTTOM: title, artist, progress, time â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
-        {/* âœ… hides by moving DOWN + opacity 0 */}
         <ProgressSection
           isLandscape={isLandscape}
           insets={insets}
@@ -1210,7 +1457,6 @@ const handlePlayPause = useCallback(() => {
 });
 
 const fs = StyleSheet.create({
-  // âœ… bumped to 44Ã—44 for easier tapping, matches the larger 28px icons
   topBtn: {
     width: 33,
     height: 33,

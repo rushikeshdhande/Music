@@ -1,6 +1,6 @@
 // src/services/notifications/deleteNotificationService.ts
 import * as Notifications from "expo-notifications";
-import * as Device from "expo-device"; // ✅ डिव्हाइसचे नाव मिळवण्यासाठी इम्पोर्ट केले
+import * as Device from "expo-device";
 import { Platform } from "react-native";
 
 const CHANNEL_ID = "song-delete-progress-v2";
@@ -209,7 +209,6 @@ export const showDeleteWaiting = async (params: {
   cancelHandler = params.onCancel;
   const sizeStr = formatSize(params.fileSizeMB);
 
-  // ✅ मोबाईलचे नाव (डिव्हाइस नेम) मिळवणे
   const deviceName = Device.deviceName || Device.modelName || "device";
 
   const content: any = {
@@ -307,14 +306,11 @@ export const showDeleteSuccess = async (params: {
     await clearProgressNow();
 
     const sizeStr = formatSize(params.fileSizeMB);
-
-    // ✅ येथे डिव्हाइसचे नाव मिळवले आहे
     const deviceName = Device.deviceName || Device.modelName || "device";
 
     const content: any = {
       subtitle: sizeStr,
       title: params.songTitle,
-      // ✅ "Delete song from [Device Name]" असे दिसेल
       body: `Delete song from ${deviceName}`,
       autoDismiss: false,
       sticky: true,

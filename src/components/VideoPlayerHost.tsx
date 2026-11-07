@@ -54,9 +54,8 @@ export default function VideoPlayerHost() {
       p.bufferOptions = { minBufferForPlayback: 0.5 };
     } catch {}
   });
-
   const { isPlaying } = useEvent(player, "playingChange", {
-    isPlaying: player.playing,
+    isPlaying: !!player?.playing,
   }) as { isPlaying: boolean };
 
   const [starting, setStarting] = useState(false);

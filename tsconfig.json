@@ -15,9 +15,7 @@
     "App.tsx",
     "index.js",
     "src/**/*.ts",
-    "src/**/*.tsx",
-    "src/**/*.d.ts",
-    "**/*.d.ts"
+    "src/**/*.tsx"
   ],
-  "exclude": ["node_modules", "android", "ios"]
+  "exclude": ["node_modules", "android", "ios", "**/node_modules/**", "**/*.d.ts"]
 }

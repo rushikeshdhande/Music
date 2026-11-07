@@ -42,7 +42,7 @@ export const CircularLoader = ({
     outputRange: ["0deg", "360deg"],
   });
 
-  const loaderColor = color || theme.primary;
+  const loaderColor = color || theme.iconsColour;
 
   return (
     <Animated.View
@@ -100,7 +100,7 @@ export function ScreenLoader({
       style={styles.screenOverlay}
     >
       <View style={styles.loaderContainer}>
-        <CircularLoader color={color || theme.primary} size={size} />
+        <CircularLoader color={color || theme.iconsColour} size={size} />
         {label ? (
           <Text style={[styles.label, { color: theme.textSecondary }]}>
             {label}
@@ -133,7 +133,7 @@ export function FullScreenLoader({
     <View style={[StyleSheet.absoluteFill, styles.fullOverlay]}>
       <View style={[StyleSheet.absoluteFill, { backgroundColor: backdrop }]} />
       <View style={styles.loaderContainer}>
-        <CircularLoader color={color || theme.primary} size={size} />
+        <CircularLoader color={color || theme.iconsColour} size={size} />
         {label ? (
           <Text style={[styles.label, { color: theme.textSecondary }]}>
             {label}

@@ -25,15 +25,14 @@ import { useMediaScanner } from "../hooks/useMediaScanner";
 import { safeGoBack } from "../utils/navigation";
 import { showToast } from "../utils/toast";
 import type { ThemeMode } from "../types";
-
 import TopStatusGlass from "../components/TopStatusGlass";
+import { getOtaInfo, checkForUpdatesManually } from "../components/OtaUpdater";
 
 const SYSTEM_FONT = Platform.select({
   ios: "System",
   android: "sans-serif",
   default: "sans-serif",
 });
-
 const ACCENT = "#f92c47";
 const DANGER = "#ff3b30";
 const SWITCH_COLOR = "#007AFF";
@@ -44,7 +43,23 @@ const CONTACT_EMAIL = "rushicdhande@gmail.com";
 const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: "light", label: "Light" },
   { key: "dark", label: "Dark" },
-  // { key: "system", label: "System Default" },
+  { key: "system", label: "System Default" },
+];
+
+// ✅ NEW: Widget style options
+type WidgetStyle = "light" | "dark" | "system";
+type WidgetSize = "small" | "medium" | "large";
+
+const WIDGET_STYLE_OPTIONS: { key: WidgetStyle; label: string }[] = [
+  { key: "light", label: "Light" },
+  { key: "dark", label: "Dark" },
+  { key: "system", label: "System Default" },
+];
+
+const WIDGET_SIZE_OPTIONS: { key: WidgetSize; label: string }[] = [
+  { key: "small", label: "Small" },
+  { key: "medium", label: "Medium" },
+  { key: "large", label: "Large" },
 ];
 
 function getPortfolioUrl(): string {
@@ -97,10 +112,17 @@ function SettingsSection({
   const isDark = theme.mode === "dark";
   return (
     <View style={styles.section}>
-      <Text style={[styles.sectionTitle, { color: isDark ? "#8e8e93" : "#6e6e73" }]}>
+      <Text
+        style={[styles.sectionTitle, { color: isDark ? "#8e8e93" : "#6e6e73" }]}
+      >
         {title.toUpperCase()}
       </Text>
-      <View style={[styles.card, { backgroundColor: isDark ? "#1c1c1e" : "#ffffff" }]}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: isDark ? "#1c1c1e" : "#ffffff" },
+        ]}
+      >
         {children}
       </View>
     </View>
@@ -142,14 +164,21 @@ function SettingsRow({
         <View style={styles.rowLeft}>
           <Text style={[styles.rowTitle, { color: textColor }]}>{title}</Text>
           {subtitle ? (
-            <Text style={[styles.rowSubtitle, { color: isDark ? "#8e8e93" : "#6e6e73" }]}>
+            <Text
+              style={[
+                styles.rowSubtitle,
+                { color: isDark ? "#8e8e93" : "#6e6e73" },
+              ]}
+            >
               {subtitle}
             </Text>
           ) : null}
         </View>
 
         {value ? (
-          <Text style={[styles.rowValue, { color: isDark ? "#8e8e93" : "#6e6e73" }]}>
+          <Text
+            style={[styles.rowValue, { color: isDark ? "#8e8e93" : "#6e6e73" }]}
+          >
             {value}
           </Text>
         ) : null}
@@ -164,7 +193,12 @@ function SettingsRow({
       </TouchableOpacity>
 
       {!isLast && (
-        <View style={[styles.divider, { backgroundColor: isDark ? "#38383a" : "#e5e5ea" }]} />
+        <View
+          style={[
+            styles.divider,
+            { backgroundColor: isDark ? "#38383a" : "#e5e5ea" },
+          ]}
+        />
       )}
     </>
   );
@@ -217,30 +251,50 @@ function SettingsModal({
   const isDark = theme.mode === "dark";
 
   return (
-    <Modal visible={!!state} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={!!state}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
       <Pressable style={styles.modalBackdrop} onPress={onClose}>
         <Pressable
           style={[
             styles.modalCard,
-            { backgroundColor: isDark ? "#1c1c1e" : "#ffffff", borderColor: isDark ? "#38383a" : "#e5e5ea" },
+            {
+              backgroundColor: isDark ? "#1c1c1e" : "#ffffff",
+              borderColor: isDark ? "#38383a" : "#e5e5ea",
+            },
           ]}
           onPress={(e) => e.stopPropagation()}
         >
           {view?.title ? (
-            <Text style={[styles.modalTitle, { color: theme.text }]}>{view.title}</Text>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>
+              {view.title}
+            </Text>
           ) : null}
 
           {view?.message ? (
-            <Text style={[styles.modalMessage, { color: isDark ? "#8e8e93" : "#6e6e73" }]}>
+            <Text
+              style={[
+                styles.modalMessage,
+                { color: isDark ? "#8e8e93" : "#6e6e73" },
+              ]}
+            >
               {view.message}
             </Text>
           ) : null}
 
-          <View style={[styles.modalDivider, { backgroundColor: isDark ? "#38383a" : "#e5e5ea" }]} />
+          <View
+            style={[
+              styles.modalDivider,
+              { backgroundColor: isDark ? "#38383a" : "#e5e5ea" },
+            ]}
+          />
 
           {(view?.options ?? []).map((opt, idx, arr) => {
             const isLast = idx === arr.length - 1;
-            const color = opt.destructive ? DANGER : theme.primary;
+            const color = opt.destructive ? DANGER : theme.iconsColour;
 
             return (
               <TouchableOpacity
@@ -258,7 +312,12 @@ function SettingsModal({
                   if (opt.onPress) setTimeout(() => opt.onPress?.(), 150);
                 }}
               >
-                <Text style={[styles.modalOptionText, { color, fontWeight: opt.destructive ? "600" : "400" }]}>
+                <Text
+                  style={[
+                    styles.modalOptionText,
+                    { color, fontWeight: opt.destructive ? "600" : "400" },
+                  ]}
+                >
                   {opt.text}
                 </Text>
               </TouchableOpacity>
@@ -286,16 +345,28 @@ function ThemePopup({
   isDark: boolean;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
       <Pressable style={styles.modalBackdrop} onPress={onClose}>
         <Pressable
           style={[
             styles.modalCard,
-            { backgroundColor: isDark ? "#1c1c1e" : "#ffffff", borderColor: isDark ? "#38383a" : "#e5e5ea" },
+            {
+              backgroundColor: isDark ? "#1c1c1e" : "#ffffff",
+              borderColor: isDark ? "#38383a" : "#e5e5ea",
+            },
           ]}
           onPress={(e) => e.stopPropagation()}
         >
-          <Text style={[styles.modalTitle, { color: isDark ? "#fff" : "#000" }]}>Theme</Text>
+          <Text
+            style={[styles.modalTitle, { color: isDark ? "#fff" : "#000" }]}
+          >
+            Theme
+          </Text>
 
           {THEME_OPTIONS.map((opt) => {
             const selected = current === opt.key;
@@ -307,7 +378,12 @@ function ThemePopup({
                 onPress={() => onSelect(opt.key, opt.label)}
               >
                 <View style={styles.themeRowLeft}>
-                  <Text style={[styles.themeLabel, { color: isDark ? "#fff" : "#000" }]}>
+                  <Text
+                    style={[
+                      styles.themeLabel,
+                      { color: isDark ? "#fff" : "#000" },
+                    ]}
+                  >
                     {opt.label}
                   </Text>
                 </View>
@@ -326,11 +402,129 @@ function ThemePopup({
             );
           })}
 
-          <View style={[styles.modalDivider, { backgroundColor: isDark ? "#38383a" : "#e5e5ea" }]} />
-          
-          {/* ✅ FIXED: Added missing Cancel button text and styling */}
-          <TouchableOpacity onPress={onClose} activeOpacity={0.6} style={styles.modalOption}>
-            <Text style={[styles.modalOptionText, { color: accent, fontWeight: "600" }]}>
+          <View
+            style={[
+              styles.modalDivider,
+              { backgroundColor: isDark ? "#38383a" : "#e5e5ea" },
+            ]}
+          />
+
+          <TouchableOpacity
+            onPress={onClose}
+            activeOpacity={0.6}
+            style={styles.modalOption}
+          >
+            <Text
+              style={[
+                styles.modalOptionText,
+                { color: accent, fontWeight: "600" },
+              ]}
+            >
+              Cancel
+            </Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ✅ NEW: Generic option picker popup (reused for widget style & size)
+function OptionPickerPopup<T extends string>({
+  visible,
+  onClose,
+  title,
+  options,
+  current,
+  onSelect,
+  accent,
+  isDark,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title: string;
+  options: { key: T; label: string }[];
+  current: T;
+  onSelect: (key: T, label: string) => void;
+  accent: string;
+  isDark: boolean;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable
+          style={[
+            styles.modalCard,
+            {
+              backgroundColor: isDark ? "#1c1c1e" : "#ffffff",
+              borderColor: isDark ? "#38383a" : "#e5e5ea",
+            },
+          ]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <Text
+            style={[styles.modalTitle, { color: isDark ? "#fff" : "#000" }]}
+          >
+            {title}
+          </Text>
+
+          {options.map((opt) => {
+            const selected = current === opt.key;
+            return (
+              <TouchableOpacity
+                key={opt.key}
+                activeOpacity={0.6}
+                style={styles.themeRow}
+                onPress={() => onSelect(opt.key, opt.label)}
+              >
+                <View style={styles.themeRowLeft}>
+                  <Text
+                    style={[
+                      styles.themeLabel,
+                      { color: isDark ? "#fff" : "#000" },
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </View>
+                {selected && (
+                  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+                    <Path
+                      d="M20 6L9 17l-5-5"
+                      stroke={accent}
+                      strokeWidth={2.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </Svg>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+
+          <View
+            style={[
+              styles.modalDivider,
+              { backgroundColor: isDark ? "#38383a" : "#e5e5ea" },
+            ]}
+          />
+
+          <TouchableOpacity
+            onPress={onClose}
+            activeOpacity={0.6}
+            style={styles.modalOption}
+          >
+            <Text
+              style={[
+                styles.modalOptionText,
+                { color: accent, fontWeight: "600" },
+              ]}
+            >
               Cancel
             </Text>
           </TouchableOpacity>
@@ -346,15 +540,16 @@ export default function SettingsScreen() {
   const s = useSettingsStore();
   const x = useExtraSettings();
   const { scanEverything } = useMediaScanner();
-  
+
   const insets = useSafeAreaInsets();
 
   const isDark = theme.mode === "dark";
-  const accent = theme.primary ?? ACCENT;
+  const accent = theme.iconsColour ?? ACCENT;
 
-  // ✅ Solid glass colors for the back button without shadows
   const glassBg = isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.08)";
-  const glassBorder = isDark ? "rgba(255, 255, 255, 0.25)" : "rgba(0, 0, 0, 0.15)";
+  const glassBorder = isDark
+    ? "rgba(255, 255, 255, 0.25)"
+    : "rgba(0, 0, 0, 0.15)";
 
   const [modal, setModal] = useState<ModalState>(null);
   const closeModal = useCallback(() => setModal(null), []);
@@ -362,10 +557,39 @@ export default function SettingsScreen() {
   const [themeOpen, setThemeOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
 
-  const appVersion = Constants.expoConfig?.version ?? Application.nativeApplicationVersion ?? "1.0.0";
+  // ✅ NEW: Widget popups
+  const [widgetStyleOpen, setWidgetStyleOpen] = useState(false);
+  const [widgetSizeOpen, setWidgetSizeOpen] = useState(false);
+
+  const appVersion =
+    Constants.expoConfig?.version ??
+    Application.nativeApplicationVersion ??
+    "1.0.0";
+  const otaInfo = getOtaInfo();
+
+  const otaBundleStatus = otaInfo.updateId
+    ? "OTA Update Active"
+    : "Embedded APK Bundle";
   const portfolioUrl = getPortfolioUrl();
 
-  const currentThemeLabel = s.theme === "light" ? "Light" : s.theme === "system" ? "System Default" : "Dark";
+  const currentThemeLabel =
+    s.theme === "light"
+      ? "Light"
+      : s.theme === "system"
+        ? "System Default"
+        : "Dark";
+
+  // ✅ NEW: Widget values with safe fallbacks
+  const widgetEnabled = !!x.widgetsEnabled;
+  const widgetStyle: WidgetStyle = (x.widgetStyle as WidgetStyle) ?? "system";
+  const widgetSize: WidgetSize = (x.widgetSize as WidgetSize) ?? "medium";
+  const widgetShowNowPlaying = !!x.widgetShowNowPlaying;
+
+  const currentWidgetStyleLabel =
+    WIDGET_STYLE_OPTIONS.find((o) => o.key === widgetStyle)?.label ??
+    "System Default";
+  const currentWidgetSizeLabel =
+    WIDGET_SIZE_OPTIONS.find((o) => o.key === widgetSize)?.label ?? "Medium";
 
   const openPortfolio = useCallback(async () => {
     try {
@@ -408,13 +632,33 @@ export default function SettingsScreen() {
       setThemeOpen(false);
       showToast(`Theme: ${label}`);
     },
-    [s]
+    [s],
+  );
+
+  // ✅ NEW: Widget handlers
+  const handleSelectWidgetStyle = useCallback(
+    (key: WidgetStyle, label: string) => {
+      x.setWidgetStyle(key);
+      setWidgetStyleOpen(false);
+      showToast(`Widget style: ${label}`);
+    },
+    [x],
+  );
+
+  const handleSelectWidgetSize = useCallback(
+    (key: WidgetSize, label: string) => {
+      x.setWidgetSize(key);
+      setWidgetSizeOpen(false);
+      showToast(`Widget size: ${label}`);
+    },
+    [x],
   );
 
   const openResetModal = useCallback(() => {
     setModal({
       title: "Reset All Settings",
-      message: "This will restore every option to its default value. Your media and favourites will not be affected.",
+      message:
+        "This will restore every option to its default value. Your media and favourites will not be affected.",
       options: [
         {
           text: "Reset Everything",
@@ -443,16 +687,20 @@ export default function SettingsScreen() {
   }, [s, x]);
 
   return (
-    <View style={[styles.root, { backgroundColor: isDark ? "#000000" : "#f2f2f7" }]}>
-      
-      <ScrollView 
-        contentContainerStyle={{ paddingTop: insets.top + 20, paddingBottom: 60 }} 
+    <View
+      style={[styles.root, { backgroundColor: isDark ? "#000000" : "#f2f2f7" }]}
+    >
+      <ScrollView
+        contentContainerStyle={{
+          paddingTop: insets.top + 20,
+          paddingBottom: 60,
+        }}
         showsVerticalScrollIndicator={false}
       >
-        
-        {/* Scrolling Title Header */}
         <View style={styles.scrollingHeader}>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>Settings</Text>
+          <Text style={[styles.headerTitle, { color: theme.text }]}>
+            Settings
+          </Text>
         </View>
 
         <SettingsSection title="Media" theme={theme}>
@@ -506,29 +754,101 @@ export default function SettingsScreen() {
           />
         </SettingsSection>
 
-        <View style={styles.footerSection}>
-          <Text style={[styles.footerQuote, { color: theme.textSecondary }]}>
-            Kill Your Ideas <Text style={[styles.footerQuoteAccent, { color: accent }]}>Before</Text> You Build IT.
-          </Text>
+        {/* ✅ NEW: Home Screen Widgets section */}
+        <SettingsSection title="Home Screen Widgets" theme={theme}>
+          <SettingsRow
+            theme={theme}
+            title="Enable Widgets"
+            subtitle="Show music controls on your home screen"
+            accessory={
+              <Toggle
+                value={widgetEnabled}
+                onChange={(v) => {
+                  x.setWidgetsEnabled(v);
+                  showToast(v ? "Widgets enabled" : "Widgets disabled");
+                }}
+              />
+            }
+          />
+          <SettingsRow
+            theme={theme}
+            title="Widget Style"
+            subtitle="Light, dark, or match system"
+            value={currentWidgetStyleLabel}
+            onPress={() => setWidgetStyleOpen(true)}
+          />
+          <SettingsRow
+            theme={theme}
+            title="Widget Size"
+            subtitle="Small, medium, or large layout"
+            value={currentWidgetSizeLabel}
+            onPress={() => setWidgetSizeOpen(true)}
+          />
+          <SettingsRow
+            theme={theme}
+            title="Show Now Playing"
+            subtitle="Display the current track in the widget"
+            accessory={
+              <Toggle
+                value={widgetShowNowPlaying}
+                onChange={(v) => {
+                  x.setWidgetShowNowPlaying(v);
+                  showToast(v ? "Now Playing ON" : "Now Playing OFF");
+                }}
+              />
+            }
+            isLast
+          />
+        </SettingsSection>
 
-          <View style={[styles.footerDivider, { backgroundColor: theme.border }]} />
+        <SettingsSection title="Software Update" theme={theme}>
+          <SettingsRow
+            theme={theme}
+            title="Check for Updates"
+            subtitle="Check and download latest updates"
+            onPress={() => {
+              void checkForUpdatesManually();
+            }}
+          />
 
-          <Text style={[styles.footerGreeting, { color: theme.text }]}>
-            Hey WhatsApp guys 👋
-          </Text>
-          <Text style={[styles.footerContact, { color: theme.textSecondary }]}>
-            I'm Rushikesh. Any concern, feel free to reach me at <Text style={[styles.footerEmail, { color: accent }]} onPress={openEmail} suppressHighlighting>{CONTACT_EMAIL}</Text>
-          </Text>
-        </View>
+          <SettingsRow
+            theme={theme}
+            title="Update Channel"
+            value={otaInfo.channel ?? "Unknown"}
+          />
+
+          <SettingsRow
+            theme={theme}
+            title="Runtime Version"
+            value={otaInfo.runtimeVersion ?? "Unknown"}
+          />
+
+          <SettingsRow
+            theme={theme}
+            title="Update Status"
+            value={!otaInfo.enabled ? "Disabled" : otaBundleStatus}
+          />
+
+          <SettingsRow
+            theme={theme}
+            title="Update ID"
+            value={
+              otaInfo.updateId
+                ? `${otaInfo.updateId.slice(0, 8)}...`
+                : "Embedded"
+            }
+            isLast
+          />
+        </SettingsSection>
       </ScrollView>
 
-      {/* Sticky Back Button - Clean Glass, No Shadow */}
+      {/* Sticky Back Button */}
       <TouchableOpacity
         onPress={() => safeGoBack(nav)}
         style={[
           styles.stickyBackBtn,
           {
-            top: insets.top + 28, // ✅ FIXED: Added missing value for 'top'
+            top: insets.top + 28,
             backgroundColor: glassBg,
             borderColor: glassBorder,
           },
@@ -546,6 +866,30 @@ export default function SettingsScreen() {
         onClose={() => setThemeOpen(false)}
         current={s.theme}
         onSelect={handleSelectTheme}
+        accent={accent}
+        isDark={isDark}
+      />
+
+      {/* ✅ NEW: Widget style picker */}
+      <OptionPickerPopup<WidgetStyle>
+        visible={widgetStyleOpen}
+        onClose={() => setWidgetStyleOpen(false)}
+        title="Widget Style"
+        options={WIDGET_STYLE_OPTIONS}
+        current={widgetStyle}
+        onSelect={handleSelectWidgetStyle}
+        accent={accent}
+        isDark={isDark}
+      />
+
+      {/* ✅ NEW: Widget size picker */}
+      <OptionPickerPopup<WidgetSize>
+        visible={widgetSizeOpen}
+        onClose={() => setWidgetSizeOpen(false)}
+        title="Widget Size"
+        options={WIDGET_SIZE_OPTIONS}
+        current={widgetSize}
+        onSelect={handleSelectWidgetSize}
         accent={accent}
         isDark={isDark}
       />

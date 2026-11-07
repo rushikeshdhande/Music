@@ -27,7 +27,6 @@ import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 
 import LibraryPageHeaders from "../components/LibraryPageHeaders";
-import MiniPlayer from "../components/MiniPlayer";
 
 import { useTheme } from "../hooks/useTheme";
 import { useUserName } from "../hooks/useUserName";
@@ -206,12 +205,19 @@ export default function PlaylistDetailsScreen() {
 
   const loadPlaylist = useCallback(async () => {
     try {
+      setLoading(true);
+
       const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
       const all: Playlist[] = raw ? JSON.parse(raw) : [];
+
       const found = all.find((p) => p.id === playlistId) ?? null;
+
       setPlaylist(found);
-    } catch (e: any) {
-      console.log("[PlaylistDetails] load error:", e?.message);
+
+      console.log("[PlaylistDetails] Loaded:", found?.name ?? "Not found");
+    } catch (error) {
+      console.error("[PlaylistDetails] Load failed:", error);
+      showToast("Could not load playlist");
       setPlaylist(null);
     } finally {
       setLoading(false);
@@ -232,12 +238,29 @@ export default function PlaylistDetailsScreen() {
     try {
       const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
       const all: Playlist[] = raw ? JSON.parse(raw) : [];
-      const updated = all.map((p) => (p.id === next.id ? next : p));
+
+      const index = all.findIndex((p) => p.id === next.id);
+
+      if (index === -1) {
+        throw new Error("Playlist not found in storage");
+      }
+
+      const updated = [...all];
+      updated[index] = {
+        ...next,
+        updatedAt: Date.now(),
+      };
+
+      // Save permanently before updating UI
       await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(updated));
-      setPlaylist(next);
-    } catch (e: any) {
-      console.log("[PlaylistDetails] persist error:", e?.message);
+
+      setPlaylist(updated[index]);
+
+      console.log("[PlaylistDetails] Saved:", updated[index].name);
+    } catch (error) {
+      console.error("[PlaylistDetails] Save failed:", error);
       showToast("Could not save changes");
+      throw error;
     }
   }, []);
 
@@ -633,9 +656,7 @@ export default function PlaylistDetailsScreen() {
               ♪
             </Text>
           ) : isFav ? (
-            <Text style={[styles.favStar, { color: COLORS.primary }]}>
-              ★
-            </Text>
+            <Text style={[styles.favStar, { color: COLORS.primary }]}>★</Text>
           ) : null}
         </View>
 
@@ -732,10 +753,7 @@ export default function PlaylistDetailsScreen() {
             <View style={styles.searchWrap}>
               <Image
                 source={SEARCH_ICON}
-                style={[
-                  styles.searchIcon,
-                  { tintColor: COLORS.textSecondary },
-                ]}
+                style={[styles.searchIcon, { tintColor: COLORS.textSecondary }]}
               />
               <TextInput
                 value={query}
@@ -807,9 +825,7 @@ export default function PlaylistDetailsScreen() {
                 disabled={songsWithArt.length === 0}
               >
                 <PlayIcon size={22} color={COLORS.background} />
-                <Text
-                  style={[styles.playText, { color: COLORS.background }]}
-                >
+                <Text style={[styles.playText, { color: COLORS.background }]}>
                   Play
                 </Text>
               </TouchableOpacity>
@@ -838,10 +854,6 @@ export default function PlaylistDetailsScreen() {
           </View>
         }
       />
-
-      <View style={styles.bottomArea} pointerEvents="box-none">
-        <MiniPlayer />
-      </View>
 
       {/* Playlist image picker popup */}
       <Modal
@@ -926,8 +938,6 @@ export default function PlaylistDetailsScreen() {
               <Text style={styles.optionText}>✎ Rename playlist</Text>
             </TouchableOpacity>
 
-            
-
             <TouchableOpacity
               style={styles.option}
               onPress={() => {
@@ -985,9 +995,7 @@ export default function PlaylistDetailsScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.option} onPress={openAddToAnother}>
-              <Text style={styles.optionText}>
-                ＋ Add to another playlist
-              </Text>
+              <Text style={styles.optionText}>＋ Add to another playlist</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.option} onPress={handleShareSong}>
@@ -1192,10 +1200,7 @@ export default function PlaylistDetailsScreen() {
             <View style={[styles.searchWrap, { marginHorizontal: 0 }]}>
               <Image
                 source={SEARCH_ICON}
-                style={[
-                  styles.searchIcon,
-                  { tintColor: COLORS.textSecondary },
-                ]}
+                style={[styles.searchIcon, { tintColor: COLORS.textSecondary }]}
               />
               <TextInput
                 value={addMusicQuery}

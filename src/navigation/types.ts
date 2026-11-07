@@ -2,7 +2,6 @@
 
 export type RootStackParamList = {
   Tabs: undefined;
-  MusicPlayer: undefined;
   Queue: undefined;
   Settings: undefined;
   FavouriteSongs: undefined;

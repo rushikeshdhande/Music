@@ -39,6 +39,7 @@ import { useAudioPlayer } from "../../hooks/useAudioPlayer";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMediaScanner } from "../../hooks/useMediaScanner";
 import { useMediaStore } from "../../store/mediaStore";
+import { usePlayerStore } from "../../store/playerStore";
 import { usePlayHistoryStore } from "../../store/playHistoryStore";
 import { useArtworkCache } from "../../hooks/useArtworkCache";
 import { useVideoStore } from "../../store/videoStore";
@@ -521,30 +522,35 @@ const GetUpVideoCard = React.memo(function GetUpVideoCard({
   onPress: () => void;
 }) {
   const isFocused = useIsFocused();
-
+const musicPlaying = usePlayerStore((s) => s.isPlaying);
   const player = useVideoPlayer(GRADIENT_VIDEO, (p) => {
     p.loop = true;
     p.muted = true;
   });
 
-  useEffect(() => {
-    if (!player) return;
-    try {
-      if (isFocused) player.play();
-      else player.pause();
-    } catch {}
-  }, [player, isFocused]);
+useEffect(() => {
+  if (!player) return;
 
-  useEffect(() => {
-    if (!player) return;
-    const sub = AppState.addEventListener("change", (state) => {
-      try {
-        if (state === "active" && isFocused) player.play();
-        else player.pause();
-      } catch {}
-    });
-    return () => sub.remove();
-  }, [player, isFocused]);
+  try {
+    if (isFocused && !musicPlaying) player.play();
+    else player.pause();
+  } catch {}
+}, [player, isFocused, musicPlaying]);
+useEffect(() => {
+  if (!player) return;
+
+  const sub = AppState.addEventListener("change", (state) => {
+    try {
+      if (state === "active" && isFocused && !musicPlaying) {
+        player.play();
+      } else {
+        player.pause();
+      }
+    } catch {}
+  });
+
+  return () => sub.remove();
+}, [player, isFocused, musicPlaying]);
 
   useEffect(() => {
     return () => {
@@ -1377,28 +1383,33 @@ export default function HomeScreen() {
     return indexed.map((x: any) => x.song).slice(0, MAX_SONGS);
   }, [libSongs]);
 
-  const topPicks = useMemo(() => {
-    type Ranked = { song: any; count: number; recency: number };
-    const ranked: Ranked[] = [];
-    for (const s of libSongs) {
-      const count = playCounts[s.id] ?? 0;
-      if (count <= 0) continue;
-      if (!s.artwork) continue;
+const topPicks = useMemo(() => {
+  type Ranked = { song: any; count: number; recency: number };
+  const ranked: Ranked[] = [];
 
-      const rIdx = recentItems.findIndex((x) => x.k === "s" && x.id === s.id);
-      ranked.push({
-        song: s,
-        count,
-        recency: rIdx === -1 ? Infinity : rIdx,
-      });
-    }
-    ranked.sort((a, b) => {
-      if (b.count !== a.count) return b.count - a.count;
-      return a.recency - b.recency;
+  for (const s of libSongs) {
+    const count = playCounts[s.id] ?? 0;
+    if (count <= 0) continue;
+    if (!s.artwork) continue;
+
+    const rIdx = recentItems.findIndex(
+      (x) => x.k === "s" && x.id === s.id
+    );
+
+    ranked.push({
+      song: s,
+      count,
+      recency: rIdx === -1 ? Infinity : rIdx,
     });
-    return ranked.slice(0, TOP_TOTAL).map((x) => x.song);
-  }, [libSongs, playCounts, recentItems]);
+  }
 
+  ranked.sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return a.recency - b.recency;
+  });
+
+  return ranked.slice(0, TOP_TOTAL).map((x) => x.song);
+}, [libSongs, playCounts, recentItems]);
   const recentlyPlayed = useMemo(() => {
     const out: any[] = [];
     for (const it of recentItems) {
@@ -1574,7 +1585,7 @@ export default function HomeScreen() {
     const slotsLeft = Math.max(0, TOP_TOTAL - fixed.length - topTier.length);
     const shuffledFill = seededShuffle(fillTier, shuffleSeed);
 
-    return [...fixed, ...topTier, ...shuffledFill.slice(0, slotsLeft)];
+ return [...topTier, ...fixed, ...shuffledFill.slice(0, slotsLeft)];
   }, [favCount, showLoading, topPicks, recentSongs, libSongs, shuffleSeed]);
 
   const renderSongRow = (list: any[]) => (

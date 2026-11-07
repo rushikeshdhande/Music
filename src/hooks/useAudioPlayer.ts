@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RepeatMode, State, Capability } from "react-native-track-player";
+import { RepeatMode } from "@rntp/player";
 import { usePlayerStore } from "../store/playerStore";
 import { Song } from "../types";
 import {
@@ -33,18 +33,11 @@ function getSafeHooks(): SafeHooks {
   if (!isTrackPlayerAvailable()) return fallback;
 
   try {
-    const mod = require("react-native-track-player");
+    const mod = require("@rntp/player");
     return {
-      useIsPlaying: () => {
-        try {
-          const state = mod.usePlaybackState();
-          return state.state === mod.State.Playing;
-        } catch {
-          return false;
-        }
-      },
+      useIsPlaying: mod.useIsPlaying ?? fallback.useIsPlaying,
       useProgress: mod.useProgress ?? fallback.useProgress,
-      useActiveMediaItem: mod.useActiveTrack ?? fallback.useActiveMediaItem,
+      useActiveMediaItem: mod.useActiveMediaItem ?? fallback.useActiveMediaItem,
     };
   } catch (error) {
     console.error("[useAudioPlayer] Hook loading failed:", error);
@@ -54,25 +47,34 @@ function getSafeHooks(): SafeHooks {
 
 const toNativeRepeat = (mode: "off" | "queue" | "track") =>
   mode === "track"
-    ? RepeatMode.Track
+    ? RepeatMode.One
     : mode === "queue"
-      ? RepeatMode.Queue
+      ? RepeatMode.All
       : RepeatMode.Off;
 
-async function readPosition(TP: any): Promise<number> {
+// v5: getProgress() is synchronous. Falls back to the old calls / store.
+function readPosition(TP: any): number {
   try {
+    if (typeof TP.getProgress === "function") {
+      const p = TP.getProgress();
+      if (p && typeof p.position === "number") return p.position;
+    }
     if (typeof TP.getPosition === "function") {
-      const v = Number(await TP.getPosition());
+      const v = Number(TP.getPosition());
       if (Number.isFinite(v)) return v;
     }
   } catch {}
   return usePlayerStore.getState().position;
 }
 
-async function readDuration(TP: any): Promise<number> {
+function readDuration(TP: any): number {
   try {
+    if (typeof TP.getProgress === "function") {
+      const p = TP.getProgress();
+      if (p && typeof p.duration === "number") return p.duration;
+    }
     if (typeof TP.getDuration === "function") {
-      const v = Number(await TP.getDuration());
+      const v = Number(TP.getDuration());
       if (Number.isFinite(v)) return v;
     }
   } catch {}
@@ -80,59 +82,18 @@ async function readDuration(TP: any): Promise<number> {
 }
 
 // ===========================================================================
-// 🔥 Ensure Player Setup
-// ===========================================================================
-let isSetup = false;
-
-async function ensurePlayerSetup() {
-  if (isSetup) return;
-  
-  // ✅ FIX: Declare TP outside the try/catch so it's accessible in both blocks
-  const TP = getTrackPlayer();
-
-  try {
-    // Attempt to get state. If it throws, it's not initialized.
-    await TP.getState();
-    isSetup = true;
-  } catch (err) {
-    try {
-      await TP.setupPlayer({ autoHandleInterruptions: true });
-      await TP.updateOptions({
-        capabilities: [
-          Capability.Play,
-          Capability.Pause,
-          Capability.SkipToNext,
-          Capability.SkipToPrevious,
-          Capability.SeekTo,
-          Capability.Stop,
-        ],
-        compactCapabilities: [
-          Capability.Play,
-          Capability.Pause,
-          Capability.SkipToNext,
-        ],
-      });
-      isSetup = true;
-    } catch (setupErr: any) {
-      if (
-        setupErr.message &&
-        setupErr.message.includes("already been initialized")
-      ) {
-        isSetup = true;
-      } else {
-        console.error("[TrackPlayer] setupPlayer failed", setupErr);
-      }
-    }
-  }
-}
-
-// ===========================================================================
-// Module-level shared state
+// Module-level shared state (shared by EVERY useAudioPlayer() call)
 // ===========================================================================
 
+// If skipping inside the existing native queue misbehaves on your build,
+// set this to false. Next/prev will then rebuild the queue like before.
 const USE_SKIP = true;
+
+// How long we ignore "old song is still active" reports after a switch.
 const PENDING_MS = 3000;
 
+// Id of the song we just asked native to play. Until native reports this id
+// (or PENDING_MS passes) every other "active track" report is stale.
 let pendingId: string | null = null;
 let pendingUntil = 0;
 
@@ -150,22 +111,28 @@ const isPending = (): boolean => {
   return true;
 };
 
+/** true => this report is stale and must be ignored */
 const shouldIgnoreDetected = (id: string | undefined): boolean => {
   if (!isPending()) return false;
   if (id != null && id === pendingId) {
-    pendingId = null;
+    pendingId = null; // native caught up
     return false;
   }
   return true;
 };
 
+// Every click gets a token; older async work is dropped.
 let playToken = 0;
+
+// Which queue (by song ids) the native player currently holds.
 let nativeQueueSig = "";
 const queueSig = (songs: Song[]) => songs.map((s) => String(s.id)).join("|");
 
+// Let React draw the new song / icons BEFORE the heavy native work starts.
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
+// Converting a whole queue on every click is slow; convert each song once.
 const mediaItemCache = new WeakMap<object, any>();
 const toMediaItems = (songs: Song[]) =>
   songs.map((song) => {
@@ -177,6 +144,8 @@ const toMediaItems = (songs: Song[]) =>
     return item;
   });
 
+// Only ONE hook instance runs the sync effects (detection, progress, etc).
+// If it unmounts, the next one takes over.
 let instanceCounter = 0;
 let ownerId: number | null = null;
 const waiters = new Map<number, (isOwner: boolean) => void>();
@@ -211,6 +180,7 @@ export function useAudioPlayer() {
   const playing =
     typeof playingResult === "boolean" ? playingResult : playingResult.playing;
 
+  // Progress — updates every 500ms
   const { position, duration } = useProgress(0.5);
   const activeTrack = useActiveMediaItem();
 
@@ -222,23 +192,35 @@ export function useAudioPlayer() {
   const queue = usePlayerStore((s) => s.queue);
   const currentIndex = usePlayerStore((s) => s.currentIndex);
 
+  // ---- owner election: only one instance runs the sync effects ----
   const idRef = useRef(0);
   if (!idRef.current) idRef.current = ++instanceCounter;
   const [isOwner, setIsOwner] = useState(false);
   useEffect(() => registerInstance(idRef.current, setIsOwner), []);
 
+  // NOTE: Live Activity / Dynamic Island is NOT handled here.
+  // It is mounted once in App.tsx via useLiveActivitySync().
+  // The system media card / status-bar pill metadata is kept fresh by
+  // useMediaSessionSync() (also mounted in App.tsx).
+
+  // ---- 1. playing state sync ----
   useEffect(() => {
     if (!isOwner) return;
+    // While switching songs native briefly reports "not playing"; ignore it
+    // so the UI doesn't flicker pause -> play.
     if (!playing && isPending()) return;
     setPlaying(playing);
   }, [isOwner, playing, setPlaying]);
 
+  // ---- 2. progress sync ----
   useEffect(() => {
     if (!isOwner) return;
+    // Old song's position must not overwrite the 0 we set for the new song.
     if (isPending()) return;
     setProgress(position, duration);
   }, [isOwner, position, duration, setProgress]);
 
+  // ---- 3. TRACK CHANGE DETECTION (one instance only) ----
   useEffect(() => {
     if (!isOwner) return;
     if (!isTrackPlayerAvailable()) return;
@@ -256,29 +238,53 @@ export function useAudioPlayer() {
       try {
         const store = usePlayerStore.getState();
         const q = store.queue;
+        const ci = store.currentIndex;
+
         if (q.length === 0) return;
 
         let activeId: string | undefined;
         let activeIndex: number | undefined;
 
-        if (typeof TP.getActiveTrack === "function") {
+        // v5 item field is `mediaId` (older builds used `id`)
+        if (typeof TP.getActiveMediaItem === "function") {
           try {
-            const t = await TP.getActiveTrack();
-            if (t && t.id != null) {
-              activeId = String(t.id);
+            const item = await TP.getActiveMediaItem();
+            if (item) {
+              const mid = item.mediaId ?? item.id;
+              if (mid != null) activeId = String(mid);
+              if (typeof item.index === "number") activeIndex = item.index;
             }
           } catch {}
         }
 
-        if (typeof TP.getActiveTrackIndex === "function") {
+        if (!activeId && typeof TP.getActiveTrack === "function") {
           try {
-            const r = await TP.getActiveTrackIndex();
+            const t = await TP.getActiveTrack();
+            const mid = t?.mediaId ?? t?.id;
+            if (mid != null) activeId = String(mid);
+          } catch {}
+        }
+
+        if (
+          activeIndex == null &&
+          typeof TP.getActiveMediaItemIndex === "function"
+        ) {
+          try {
+            const r = await TP.getActiveMediaItemIndex();
+            if (typeof r === "number") activeIndex = r;
+          } catch {}
+        }
+
+        if (activeIndex == null && typeof TP.getCurrentIndex === "function") {
+          try {
+            const r = await TP.getCurrentIndex();
             if (typeof r === "number") activeIndex = r;
           } catch {}
         }
 
         if (!alive) return;
 
+        // Work out which song native says is active.
         let reportedIndex = -1;
         if (activeIndex != null && activeIndex >= 0 && activeIndex < q.length) {
           reportedIndex = activeIndex;
@@ -289,13 +295,20 @@ export function useAudioPlayer() {
 
         const reportedSongId = String(q[reportedIndex]?.id);
 
+        // Stale report from the previous song during a switch -> ignore.
         if (shouldIgnoreDetected(reportedSongId)) return;
 
+        // Re-read the store (it may have changed while we awaited).
         const latest = usePlayerStore.getState();
         if (reportedIndex !== latest.currentIndex) {
+          console.log(
+            `[TrackDetect] index ${latest.currentIndex} → ${reportedIndex} :`,
+            latest.queue[reportedIndex]?.title,
+          );
           latest.setCurrentIndex(reportedIndex);
         }
       } catch {
+        // ignore
       } finally {
         running = false;
       }
@@ -327,25 +340,30 @@ export function useAudioPlayer() {
     };
   }, [isOwner]);
 
+  // ---- 4. activeTrack hook fallback (one instance only) ----
   useEffect(() => {
     if (!isOwner) return;
-    const aid = activeTrack?.id;
+    const aid = activeTrack?.mediaId ?? activeTrack?.id;
     if (!aid) return;
 
+    // Stale "old song is still active" report while switching -> ignore.
     if (shouldIgnoreDetected(String(aid))) return;
 
     const idx = queue.findIndex((s) => String(s.id) === String(aid));
     if (idx >= 0 && idx !== currentIndex) {
+      console.log("[TrackDetect:hook] →", idx, queue[idx]?.title);
       setCurrentIndex(idx);
     }
   }, [
     isOwner,
+    activeTrack?.mediaId,
     activeTrack?.id,
     queue,
     currentIndex,
     setCurrentIndex,
   ]);
 
+  // ---- 5. Safety net: auto-play next song when the current one ends ----
   const nextRef = useRef<() => Promise<void>>(async () => {});
   const endHandledRef = useRef<string | null>(null);
   const endTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -387,6 +405,7 @@ export function useAudioPlayer() {
     };
   }, []);
 
+  // ---- loadAndPlay ----
   const loadAndPlay = useCallback(
     async (songs: Song[], startIndex: number): Promise<void> => {
       if (!songs.length) throw new Error("Playback queue is empty.");
@@ -404,26 +423,22 @@ export function useAudioPlayer() {
       const token = ++playToken;
 
       try {
-        // 🔥 FIX: Ensure player is setup before doing anything
-        await ensurePlayerSetup();
-
-        if (typeof TP.add !== "function") {
-          throw new Error("RNTP add() is unavailable.");
+        if (typeof TP.setMediaItems !== "function") {
+          throw new Error("RNTP V5 setMediaItems() is unavailable.");
         }
 
+        // Update the UI instantly and protect it from stale native reports.
         setPending(songs[startIndex].id);
         setQueue(songs, startIndex);
         setProgress(0, songs[startIndex].duration || 0);
-        setPlaying(true);
-        await nextFrame();
+        setPlaying(true); // optimistic: controller icons show instantly
+        await nextFrame(); // let the mini player render first
 
         if (token !== playToken) return;
-        
-        await TP.reset();
-        await TP.add(toMediaItems(songs));
-        await TP.skip(startIndex);
+        await TP.setMediaItems(toMediaItems(songs), startIndex);
         nativeQueueSig = queueSig(songs);
 
+        // A newer click happened while we were loading -> drop this one.
         if (token !== playToken) return;
 
         await TP.play();
@@ -448,9 +463,10 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      await ensurePlayerSetup();
-      const state = await TP.getState();
-      const actualPlaying = state === State.Playing;
+      const actualPlaying =
+        typeof TP.isPlaying === "function"
+          ? TP.isPlaying()
+          : usePlayerStore.getState().isPlaying;
 
       if (actualPlaying) {
         await TP.pause();
@@ -483,37 +499,41 @@ export function useAudioPlayer() {
       const token = ++playToken;
 
       try {
-        await ensurePlayerSetup();
-        
+        // Update the UI instantly and protect it from stale native reports.
         setPending(songs[targetIndex].id);
         setCurrentIndex(targetIndex);
         setProgress(0, songs[targetIndex].duration || 0);
-        setPlaying(true);
-        await nextFrame();
+        setPlaying(true); // optimistic: controller icons show instantly
+        await nextFrame(); // let the UI render first
 
         if (token !== playToken) return;
         const sig = queueSig(songs);
         let skipped = false;
 
+        // Fast path: native already holds this exact queue -> just skip.
         if (USE_SKIP && sig === nativeQueueSig) {
-          if (typeof TP.skip === "function") {
-            try {
-              await TP.skip(targetIndex);
-              skipped = true;
-            } catch {}
+          for (const fn of ["skipToIndex", "skipTo"]) {
+            if (typeof TP[fn] === "function") {
+              try {
+                await TP[fn](targetIndex);
+                skipped = true;
+                break;
+              } catch {
+                // try the next name / fall back to setMediaItems
+              }
+            }
           }
         }
 
         if (!skipped) {
-          if (typeof TP.add !== "function") {
-            throw new Error("RNTP add() is unavailable.");
+          if (typeof TP.setMediaItems !== "function") {
+            throw new Error("RNTP V5 setMediaItems() is unavailable.");
           }
-          await TP.reset();
-          await TP.add(toMediaItems(songs));
-          await TP.skip(targetIndex);
+          await TP.setMediaItems(toMediaItems(songs), targetIndex);
           nativeQueueSig = sig;
         }
 
+        // A newer click happened while we were loading -> drop this one.
         if (token !== playToken) return;
 
         await TP.play();
@@ -545,9 +565,7 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      await ensurePlayerSetup();
-      const pos = await readPosition(TP);
-      if (pos > 3) {
+      if (readPosition(TP) > 3) {
         await TP.seekTo(0);
         setProgress(0, usePlayerStore.getState().duration);
         return;
@@ -569,7 +587,6 @@ export function useAudioPlayer() {
   const seek = useCallback(async (value: number) => {
     if (!isTrackPlayerAvailable()) return;
     try {
-      await ensurePlayerSetup();
       await getTrackPlayer().seekTo(value);
     } catch (error) {
       console.error("[seek] Failed:", error);
@@ -581,15 +598,16 @@ export function useAudioPlayer() {
     const TP = getTrackPlayer();
 
     try {
-      await ensurePlayerSetup();
-      const pos = await readPosition(TP);
-      const dur = await readDuration(TP);
+      const pos = readPosition(TP);
+      const dur = readDuration(TP);
       await TP.seekTo(Math.max(0, Math.min(dur, pos + delta)));
     } catch (error) {
       console.error("[seekBy] Failed:", error);
     }
   }, []);
 
+  // Needed by useCrossfade (it was never returned before, so crossfade
+  // silently did nothing).
   const setVolume = useCallback(async (value: number) => {
     if (!isTrackPlayerAvailable()) return;
     try {
@@ -624,20 +642,19 @@ export function useAudioPlayer() {
 
     setQueue(songs, nextIndex);
 
+    // Keep the native player's queue in the same order as the app's queue.
     if (!isTrackPlayerAvailable()) return;
     const TP = getTrackPlayer();
     try {
-      await ensurePlayerSetup();
-      if (typeof TP.add !== "function" || songs.length === 0) return;
+      if (typeof TP.setMediaItems !== "function" || songs.length === 0) return;
 
       const wasPlaying = usePlayerStore.getState().isPlaying;
-      const pos = await readPosition(TP);
+      const pos = readPosition(TP);
 
-      await TP.reset();
-      await TP.add(toMediaItems(songs));
-      await TP.skip(nextIndex);
+      // Same song stays current, so no stale-report guard is needed, but the
+      // native queue order changes, so remember the new signature.
+      await TP.setMediaItems(toMediaItems(songs), nextIndex);
       nativeQueueSig = queueSig(songs);
-      
       if (pos > 0 && typeof TP.seekTo === "function") await TP.seekTo(pos);
       if (wasPlaying) await TP.play();
       else if (typeof TP.pause === "function") await TP.pause();
@@ -655,7 +672,6 @@ export function useAudioPlayer() {
     if (!isTrackPlayerAvailable()) return;
     const TP = getTrackPlayer();
     try {
-      await ensurePlayerSetup();
       if (typeof TP.setRepeatMode === "function") {
         await TP.setRepeatMode(toNativeRepeat(nextMode));
       }

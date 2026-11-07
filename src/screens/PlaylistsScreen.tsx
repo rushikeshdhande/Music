@@ -27,7 +27,6 @@ import * as FileSystem from "expo-file-system/legacy";
 import { useTheme } from "../hooks/useTheme";
 import { usePlayerStore } from "../store/playerStore";
 import { showToast } from "../utils/toast";
-import MiniPlayer from "../components/MiniPlayer";
 import LibraryPageHeaders from "../components/LibraryPageHeaders";
 import { UserPlaylistIcon } from "../icons/Icons";
 
@@ -91,26 +90,6 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "favourites", label: "Favourites" },
 ];
 
-// Dummy playlists for visual testing
-const DUMMY_PLAYLISTS: Playlist[] = [
-  {
-    id: "pl_dummy_1",
-    name: "Dummy Playlist 1",
-    artwork: null,
-    songs: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  {
-    id: "pl_dummy_2",
-    name: "Chill Vibes (Dummy)",
-    artwork: null,
-    songs: [],
-    createdAt: Date.now() - 100000,
-    updatedAt: Date.now() - 100000,
-  },
-];
-
 export default function PlaylistsScreen() {
   const nav = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -126,7 +105,7 @@ export default function PlaylistsScreen() {
   const COLORS = useMemo(() => ({ ...DEFAULT_COLORS, ...base }), [base]);
   const styles = useMemo(() => createStyles(COLORS), [COLORS]);
 
-  const [playlists, setPlaylists] = useState<Playlist[]>(DUMMY_PLAYLISTS);
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("title");
   const [filterKey, setFilterKey] = useState<FilterKey>("all");
@@ -139,7 +118,9 @@ export default function PlaylistsScreen() {
 
   // Long-press playlist action sheet
   const [actionSheetOpen, setActionSheetOpen] = useState(false);
-  const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(
+    null,
+  );
 
   // Create Playlist States
   const [newName, setNewName] = useState("");
@@ -153,18 +134,28 @@ export default function PlaylistsScreen() {
   const isPlaying = !!currentSong;
 
   // ---------- load ----------
-  const loadPlaylists = useCallback(async () => {
-    try {
-      const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
-      const parsed = raw ? JSON.parse(raw) : [];
-      setPlaylists(parsed.length > 0 ? parsed : DUMMY_PLAYLISTS);
-    } catch (e: any) {
-      console.log("Load playlists error:", e?.message);
-      setPlaylists(DUMMY_PLAYLISTS);
-    } finally {
-      setLoading(false);
+const loadPlaylists = useCallback(async () => {
+  try {
+    setLoading(true);
+
+    const raw = await AsyncStorage.getItem(STORAGE_PLAYLISTS);
+    const parsed = raw ? JSON.parse(raw) : [];
+
+    if (!Array.isArray(parsed)) {
+      throw new Error("Invalid playlist storage format");
     }
-  }, []);
+
+    setPlaylists(parsed);
+
+    console.log("[Playlists] Loaded:", parsed.length);
+  } catch (error) {
+    console.error("[Playlists] Load failed:", error);
+    showToast("Could not load playlists");
+    setPlaylists([]);
+  } finally {
+    setLoading(false);
+  }
+}, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -173,13 +164,23 @@ export default function PlaylistsScreen() {
   );
 
   // ---------- save helper ----------
-  const savePlaylists = useCallback(async (next: Playlist[]) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(next));
-    } catch {
-      showToast("Could not save playlists");
-    }
-  }, []);
+const savePlaylists = useCallback(async (next: Playlist[]) => {
+  try {
+    await AsyncStorage.setItem(
+      STORAGE_PLAYLISTS,
+      JSON.stringify(next)
+    );
+
+    setPlaylists(next);
+
+    console.log("[Playlists] Saved:", next.length);
+    return true;
+  } catch (error) {
+    console.error("[Playlists] Save failed:", error);
+    showToast("Could not save playlists");
+    return false;
+  }
+}, []);
 
   // ---------- sorting / filtering ----------
   const visible = useMemo(() => {
@@ -220,22 +221,32 @@ export default function PlaylistsScreen() {
   }, [playlists, query, sortKey, filterKey]);
 
   // ---------- Image Picker Logic ----------
-  const persistArtwork = async (tempUri: string): Promise<string> => {
-    try {
-      const dir = `${FileSystem.documentDirectory}playlist_artwork/`;
-      const info = await FileSystem.getInfoAsync(dir);
-      if (!info.exists) {
-        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-      }
-      const ext = (tempUri.split(".").pop() || "jpg").split("?")[0];
-      const dest = `${dir}pl_${Date.now()}.${ext}`;
-      await FileSystem.copyAsync({ from: tempUri, to: dest });
-      return dest;
-    } catch (e) {
-      console.warn("[Library] copy artwork failed:", e);
-      return tempUri;
+const persistArtwork = async (tempUri: string): Promise<string> => {
+  const dir = `${FileSystem.documentDirectory}playlist_artwork/`;
+
+  try {
+    const info = await FileSystem.getInfoAsync(dir);
+
+    if (!info.exists) {
+      await FileSystem.makeDirectoryAsync(dir, {
+        intermediates: true,
+      });
     }
-  };
+
+    const ext = (tempUri.split(".").pop() || "jpg").split("?")[0];
+    const dest = `${dir}pl_${Date.now()}.${ext}`;
+
+    await FileSystem.copyAsync({
+      from: tempUri,
+      to: dest,
+    });
+
+    return dest;
+  } catch (error) {
+    console.error("[Playlists] Artwork save failed:", error);
+    throw error;
+  }
+};
 
   const handleTakePhoto = async () => {
     setImageMenuOpen(false);
@@ -295,52 +306,62 @@ export default function PlaylistsScreen() {
       {
         text: "Delete",
         style: "destructive",
-        onPress: async () => {
-          const next = playlists.filter((p) => p.id !== pl.id);
-          setPlaylists(next);
-          try {
-            await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(next));
-            showToast("Playlist deleted");
-          } catch {
-            showToast("Could not delete playlist");
-            loadPlaylists();
-          }
-        },
+    onPress: async () => {
+  const next = playlists.filter((p) => p.id !== pl.id);
+
+  const saved = await savePlaylists(next);
+
+  if (saved) {
+    showToast("Playlist deleted");
+  }
+},
       },
     ]);
   };
 
-  const createPlaylist = async () => {
-    const name = newName.trim();
-    if (!name) return;
-    setCreating(true);
-    try {
-      const savedArtwork = coverImage ? await persistArtwork(coverImage) : null;
+const createPlaylist = async () => {
+  const name = newName.trim();
 
-      const pl: Playlist = {
-        id: `pl_${Date.now()}`,
-        name,
-        artwork: savedArtwork,
-        songs: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      const next = [pl, ...playlists];
-      setPlaylists(next);
+  if (!name || creating) return;
 
-      setCreateOpen(false);
-      setNewName("");
-      setCoverImage(null);
+  setCreating(true);
 
-      await AsyncStorage.setItem(STORAGE_PLAYLISTS, JSON.stringify(next));
-      showToast("Playlist created");
-    } catch {
-      showToast("Could not create playlist");
-      loadPlaylists();
-    } finally {
-      setCreating(false);
-    }
-  };
+  try {
+    const savedArtwork = coverImage
+      ? await persistArtwork(coverImage)
+      : null;
+
+    const now = Date.now();
+
+    const pl: Playlist = {
+      id: `pl_${now}`,
+      name,
+      artwork: savedArtwork,
+      songs: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const next = [pl, ...playlists];
+
+    const saved = await savePlaylists(next);
+
+    if (!saved) return;
+
+    setCreateOpen(false);
+    setNewName("");
+    setCoverImage(null);
+
+    showToast("Playlist created");
+
+    console.log("[Playlists] Created:", name);
+  } catch (error) {
+    console.error("[Playlists] Create failed:", error);
+    showToast("Could not create playlist");
+  } finally {
+    setCreating(false);
+  }
+};
 
   // ---------- Long press → open action sheet ----------
   const openActionSheet = (pl: Playlist) => {
@@ -354,20 +375,29 @@ export default function PlaylistsScreen() {
   };
 
   // ---- Action handlers ----
-  const handleTogglePin = async () => {
-    if (!selectedPlaylist) return;
-    const next = playlists.map((p) =>
-      p.id === selectedPlaylist.id ? { ...p, pinned: !p.pinned } : p,
-    );
-    setPlaylists(next);
-    await savePlaylists(next);
+const handleTogglePin = async () => {
+  if (!selectedPlaylist) return;
+
+  const pl = selectedPlaylist;
+
+  const next = playlists.map((p) =>
+    p.id === pl.id
+      ? { ...p, pinned: !p.pinned, updatedAt: Date.now() }
+      : p
+  );
+
+  const saved = await savePlaylists(next);
+
+  if (saved) {
     showToast(
-      selectedPlaylist.pinned
+      pl.pinned
         ? "Unpinned from library"
-        : "Pinned to library top",
+        : "Pinned to library top"
     );
+
     closeActionSheet();
-  };
+  }
+};
 
   const handleDeleteFromLibrary = () => {
     const pl = selectedPlaylist;
@@ -376,20 +406,29 @@ export default function PlaylistsScreen() {
     setTimeout(() => deletePlaylist(pl), 250);
   };
 
-  const handleToggleFavourite = async () => {
-    if (!selectedPlaylist) return;
-    const next = playlists.map((p) =>
-      p.id === selectedPlaylist.id ? { ...p, favourite: !p.favourite } : p,
-    );
-    setPlaylists(next);
-    await savePlaylists(next);
+const handleToggleFavourite = async () => {
+  if (!selectedPlaylist) return;
+
+  const pl = selectedPlaylist;
+
+  const next = playlists.map((p) =>
+    p.id === pl.id
+      ? { ...p, favourite: !p.favourite, updatedAt: Date.now() }
+      : p
+  );
+
+  const saved = await savePlaylists(next);
+
+  if (saved) {
     showToast(
-      selectedPlaylist.favourite
+      pl.favourite
         ? "Removed from Favourites"
-        : "Added to Favourites",
+        : "Added to Favourites"
     );
+
     closeActionSheet();
-  };
+  }
+};
 
   const handlePlayNext = async () => {
     const pl = selectedPlaylist;
@@ -513,13 +552,6 @@ export default function PlaylistsScreen() {
         }
       />
 
-      {/* ---------------- MINI PLAYER ---------------- */}
-      {isPlaying && (
-        <View style={styles.bottomArea} pointerEvents="box-none">
-          <MiniPlayer />
-        </View>
-      )}
-
       {/* ============================================================ */}
       {/* ------------------ FILTER BOTTOM SHEET --------------------- */}
       {/* ============================================================ */}
@@ -550,7 +582,10 @@ export default function PlaylistsScreen() {
                   activeOpacity={0.7}
                 >
                   <Text
-                    style={[styles.sheetCheck, active && { color: COLORS.text }]}
+                    style={[
+                      styles.sheetCheck,
+                      active && { color: COLORS.text },
+                    ]}
                   >
                     {active ? "✓" : ""}
                   </Text>
@@ -601,7 +636,10 @@ export default function PlaylistsScreen() {
                   activeOpacity={0.7}
                 >
                   <Text
-                    style={[styles.sheetCheck, active && { color: COLORS.text }]}
+                    style={[
+                      styles.sheetCheck,
+                      active && { color: COLORS.text },
+                    ]}
                   >
                     {active ? "✓" : ""}
                   </Text>
@@ -661,7 +699,9 @@ export default function PlaylistsScreen() {
                   activeOpacity={0.7}
                 >
                   <Text style={styles.actionItemText}>
-                    {selectedPlaylist.pinned ? "Unpin playlist" : "Pin playlist"}
+                    {selectedPlaylist.pinned
+                      ? "Unpin playlist"
+                      : "Pin playlist"}
                   </Text>
                 </TouchableOpacity>
 
@@ -726,7 +766,10 @@ export default function PlaylistsScreen() {
             onPress={() => setCreateOpen(false)}
           >
             <Pressable
-              style={[styles.createSheet, { paddingBottom: insets.bottom + 20 }]}
+              style={[
+                styles.createSheet,
+                { paddingBottom: insets.bottom + 20 },
+              ]}
               onPress={(e) => e.stopPropagation()}
             >
               <ScrollView

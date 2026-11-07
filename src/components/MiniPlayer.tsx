@@ -6,6 +6,11 @@
 // time content appears, and again after content was cleared. While the
 // entrance animation is running the overlay is clipped at the tab bar's
 // top edge (overflow hidden), so nothing draws over the tab bar.
+//
+// FIX: the root's zIndex / elevation are now CONSTANT. Previously they were
+// flipped 0 -> 999 when the entrance finished, which made Android re-order
+// and redraw the navbar (icons / labels disappeared). The clipping alone
+// already keeps the mini player from drawing over the navbar.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
@@ -35,7 +40,7 @@ import { usePlayerStore } from "../store/playerStore";
 import { useMediaStore } from "../store/mediaStore";
 import { useVideoStore } from "../store/videoStore";
 import { useVideoBridge } from "../store/videoPlayerBridge";
-
+import TrackPlayer from "@rntp/player";
 import { useSettingsStore } from "../store/settingsStore";
 import { useAudioPlayer } from "../hooks/useAudioPlayer";
 import { useTheme } from "../hooks/useTheme";
@@ -43,6 +48,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { ScrollView } from "react-native";
 import { readId3Tags, isUnknownArtist, SongTags } from "../utils/id3Tags";
 import { showToast } from "../utils/toast";
+import { waitForPlayerSetup } from "../services/audio/playerSetup"; 
 import {
   getCachedTags,
   getCachedArtwork,
@@ -90,6 +96,25 @@ const MUSIC_DEFAULT_SRC: string | null = (() => {
     return null;
   }
 })();
+
+// ──────────────────────────────────────────────────────────────────────────
+// @rntp/player ships .ts source (not .d.ts), so `skipLibCheck` does NOT
+// apply to it. `State` exists at runtime but is not re-exported from the
+// package-root typings. Pull it off the raw module with an ordinal-matching
+// fallback so `state === State.Playing` behaves the same at runtime.
+// ──────────────────────────────────────────────────────────────────────────
+const State: any =
+  (require("@rntp/player") as any).State ?? {
+    None: 0,
+    Ready: 1,
+    Buffering: 2,
+    Playing: 3,
+    Paused: 4,
+    Stopped: 5,
+    Ended: 6,
+    Loading: 7,
+    Error: 8,
+  };
 
 // ---------------------------------------------------------------------------
 // Default song artwork
@@ -583,7 +608,6 @@ const useSongMeta = (song: any) => {
 type MiniPlayerProps = {
   blurTargetRef?: React.RefObject<any>;
 };
-
 export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -616,8 +640,6 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
   const isDark = theme.mode === "dark";
   const miniText = theme.text;
 
-  // ── glass values from the theme file (clamped to their allowed ranges) ──
-  // Same source as the root navbar, so both always match.
   const glass = theme.glass;
   const glassFrost = clamp(glass.frostBlur, 0, 30);
   const glassGray = Math.round(clamp(glass.tintColor, 0, 255));
@@ -632,25 +654,167 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
     : MINI_BORDER_COLOR_LIGHT;
 
   // ── SONG source ───────────────────────────────────────────────────────────
-  // ── SONG source ───────────────────────────────────────────────────────────
   const liveSong = usePlayerStore((state) => state.currentTrack);
   const [heldSong, setHeldSong] = useState(liveSong);
+
   useEffect(() => {
     if (liveSong) {
       setHeldSong(liveSong);
       return;
     }
-    
-    // 🔥 FIX: If there's no live song and the queue is empty, it means the player was
-    // explicitly stopped/deleted. Hide the mini player instantly.
     const ps: any = usePlayerStore.getState();
     const isEmpty = !ps.queue || ps.queue.length === 0;
     const delay = isEmpty ? 0 : 500;
-    
+
     const t = setTimeout(() => setHeldSong(null), delay);
     return () => clearTimeout(t);
   }, [liveSong]);
+
   const song = liveSong ?? heldSong;
+  // ── RESTORE NATIVE PLAYER AFTER APP REFRESH ─────────────────────────────
+  const hasSyncedRef = useRef(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const MAX_RETRIES = 5;
+    const RETRY_DELAY = 1000;
+
+    const isNotReadyError = (err: any): boolean => {
+      const m = String(err?.message ?? err).toLowerCase();
+      return (
+        m.includes("unavailable") ||
+        m.includes("not initialized") ||
+        m.includes("not ready")
+      );
+    };
+
+    const syncPlayerState = async () => {
+      if (!isMounted || hasSyncedRef.current) return;
+
+      const existingSong = usePlayerStore.getState().currentTrack;
+      if (existingSong) {
+        hasSyncedRef.current = true;
+        return;
+      }
+
+      try {
+        await waitForPlayerSetup();
+        if (!isMounted) return;
+
+        const TP: any = TrackPlayer as any;
+
+        // v5 has getActiveMediaItem; old builds had getActiveTrack.
+        let activeTrack: any = null;
+        if (typeof TP.getActiveMediaItem === "function") {
+          activeTrack = await TP.getActiveMediaItem();
+        } else if (typeof TP.getActiveTrack === "function") {
+          activeTrack = await TP.getActiveTrack();
+        }
+
+        if (!isMounted) return;
+
+        // No active track in native player — nothing to restore. STOP.
+        // (No retry: nothing was ever playing.)
+        if (!activeTrack) {
+          hasSyncedRef.current = true;
+          return;
+        }
+
+        const id =
+          activeTrack.mediaId ?? activeTrack.id ?? activeTrack.trackId;
+
+        const currentSong = {
+          id: String(id),
+          title: activeTrack.title || "Unknown Title",
+          artist: activeTrack.artist || "Unknown Artist",
+          album: activeTrack.albumTitle || activeTrack.album || "Unknown Album",
+          artwork: activeTrack.artworkUrl ?? activeTrack.artwork,
+          uri: activeTrack.url,
+          duration: activeTrack.duration || 0,
+          albumArt: activeTrack.artworkUrl ?? activeTrack.artwork ?? null,
+          fileName: "",
+          fileSize: 0,
+          dateAdded: Date.now(),
+          dateModified: Date.now(),
+          isFavorite: false,
+        };
+
+        let queue: any[] = [];
+        try {
+          let nativeQueue: any = [];
+          if (typeof TP.getQueue === "function") {
+            nativeQueue = await TP.getQueue();
+          }
+          queue = Array.isArray(nativeQueue)
+            ? nativeQueue.map((t: any) => {
+                const qid = t.mediaId ?? t.id ?? t.trackId;
+                return {
+                  id: String(qid),
+                  title: t.title || "Unknown Title",
+                  artist: t.artist || "Unknown Artist",
+                  album:
+                    t.albumTitle || t.album || "Unknown Album",
+                  artwork: t.artworkUrl ?? t.artwork,
+                  uri: t.url,
+                  duration: t.duration || 0,
+                  albumArt:
+                    t.artworkUrl ?? t.artwork ?? null,
+                  fileName: "",
+                  fileSize: 0,
+                  dateAdded: Date.now(),
+                  dateModified: Date.now(),
+                  isFavorite: false,
+                };
+              })
+            : [];
+        } catch (e) {
+          console.log("[MiniPlayer] Queue restore failed:", e);
+        }
+
+        if (!queue.some((s) => s.id === currentSong.id)) {
+          queue.unshift(currentSong);
+        }
+        const index = queue.findIndex((s) => s.id === currentSong.id);
+
+        usePlayerStore.getState().setQueue(queue, index >= 0 ? index : 0);
+
+        let playing = false;
+        try {
+          if (typeof TP.isPlaying === "function") {
+            playing = !!TP.isPlaying();
+          } else if (typeof TP.getState === "function") {
+            const st = await TP.getState();
+            playing = st === State.Playing;
+          }
+        } catch {}
+        usePlayerStore.getState().setPlaying(playing);
+
+        setHeldSong(currentSong);
+        hasSyncedRef.current = true;
+        console.log("[MiniPlayer] Native player restored:", currentSong.title);
+      } catch (error: any) {
+        if (!isMounted) return;
+        // Log once; only retry if the error looks like "not ready yet".
+        if (isNotReadyError(error) && attempts < MAX_RETRIES) {
+          attempts++;
+          retryTimer = setTimeout(syncPlayerState, RETRY_DELAY);
+        } else {
+          console.log("[MiniPlayer] Restore skipped:", error?.message ?? error);
+          hasSyncedRef.current = true;
+        }
+      }
+    };
+
+    syncPlayerState();
+
+    return () => {
+      isMounted = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, []);
+  // ───────────────────────────────────────────────────────────────────────
 
   // ── VIDEO source ──────────────────────────────────────────────────────────
   const videoCurrent: any = useVideoStore((s) => s.current);
@@ -661,9 +825,7 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
   const nextVideo = useVideoStore((s) => s.next);
   const prevVideo = useVideoStore((s) => s.prev);
   const videoQueue: any[] = useVideoStore((s) => s.queue) as any;
-  const videoPinned = useVideoStore(
-    (s: any) => !!s.pinned?.[videoCurrent?.id],
-  );
+  const videoPinned = useVideoStore((s: any) => !!s.pinned?.[videoCurrent?.id]);
   const togglePin = useVideoStore((s: any) => s.togglePin);
   const playNextFavourite = useVideoStore((s: any) => s.playNextFavourite);
 
@@ -855,9 +1017,16 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
   const sheetShownRef = useRef(valueRef.current > 0.02);
 
   useEffect(() => {
+    let lastPush = 0;
     const id = progress.addListener(({ value }) => {
       valueRef.current = value;
-      playerExpansionShared.value = value;
+
+      // Throttle writes to the Reanimated shared value (≈60fps max)
+      const now = Date.now();
+      if (now - lastPush >= 16) {
+        lastPush = now;
+        playerExpansionShared.value = value;
+      }
 
       const open = value > 0.6;
       if (open !== isOpenRef.current) {
@@ -1097,16 +1266,19 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
     if (!song || isVideoRef.current) return;
     const albumName = cleanName(meta.album, UNKNOWN_ALBUM);
     const target = albumName.toLowerCase();
+    const isUnknown = target === UNKNOWN_ALBUM.toLowerCase();
 
-    const ids: any[] = useMediaStore
-      .getState()
-      .songs.filter((s: any) => {
-        const raw =
-          getCachedTags(s.id)?.album ??
-          (typeof s.album === "string" ? s.album : undefined);
-        return cleanName(raw, UNKNOWN_ALBUM).toLowerCase() === target;
-      })
-      .map((s: any) => s.id);
+    const ids: any[] = isUnknown
+      ? [(song as any).id] // unknown album: only this song
+      : useMediaStore
+          .getState()
+          .songs.filter((s: any) => {
+            const raw =
+              getCachedTags(s.id)?.album ??
+              (typeof s.album === "string" ? s.album : undefined);
+            return cleanName(raw, UNKNOWN_ALBUM).toLowerCase() === target;
+          })
+          .map((s: any) => s.id);
     if (!ids.includes((song as any).id)) ids.push((song as any).id);
 
     const opened = openAlbumDetails({ albumName, songIds: ids });
@@ -1300,21 +1472,17 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
     extrapolate: "clamp",
   });
 
-  const navbarTravel = NAVBAR_HEIGHT + insets.bottom + NAVBAR_BOTTOM_GAP + 8;
-
-  const bgBottomEndProgress = Math.min(
-    1,
-    (geo.bottomOffset / navbarTravel) * 0.2,
-  );
-
+  // Bottom edge immediately extends to 0 (the very bottom of the screen)
+  // as soon as expansion starts, so there is no gap at the bottom.
   const bgBottom = progress.interpolate({
-    inputRange: [0, bgBottomEndProgress, 1],
+    inputRange: [0, 0.15, 1],
     outputRange: [geo.bottomOffset, 0, 0],
     extrapolate: "clamp",
   });
+
   const bgSide = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [MINI_SIDE_MARGIN, 0],
+    inputRange: [0, 0.15, 1],
+    outputRange: [MINI_SIDE_MARGIN, 0, 0],
     extrapolate: "clamp",
   });
   const bgRadius = progress.interpolate({
@@ -1350,10 +1518,9 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
     outputRange: [-geo.miniTop - MINI_BORDER_WIDTH, 0],
     extrapolate: "clamp",
   });
-
   const colorOpacity = progress.interpolate({
-    inputRange: [0, 0.01],
-    outputRange: [0, 1],
+    inputRange: [0, 0.1, 0.6, 1],
+    outputRange: [0, 0, 1, 1],
     extrapolate: "clamp",
   });
   const dividerOpacity = progress.interpolate({
@@ -1371,6 +1538,13 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
     extrapolate: "clamp",
   });
   const miniContentOpacity = progress.interpolate({
+    inputRange: [0, 0.04],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+
+  // NEW: fade the mini pill's background / glass tint / border with the same curve
+  const miniBgOpacity = progress.interpolate({
     inputRange: [0, 0.04],
     outputRange: [1, 0],
     extrapolate: "clamp",
@@ -1462,13 +1636,16 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
   return (
     <View
       pointerEvents="box-none"
-      style={[styles.root, entranceActive && { zIndex: 0, elevation: 0 }]}
+      collapsable={false}
+      // FIX: constant stacking (see styles.root). No zIndex / elevation flip.
+      style={styles.root}
       onLayout={onRootLayout}
     >
       {/* ── ENTRANCE WRAPPER: clips at the tab bar top so the mini player
              slides up from BEHIND the tab bar ─────────────────────────── */}
       <View
         pointerEvents="box-none"
+        collapsable={false}
         style={{
           position: "absolute",
           top: 0,
@@ -1483,6 +1660,7 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
       >
         <Animated.View
           pointerEvents="box-none"
+          collapsable={false}
           style={{
             position: "absolute",
             top: 0,
@@ -1549,15 +1727,6 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
                 borderRadius: bgRadius,
                 borderWidth: miniBorderWidth,
                 borderColor: miniBorderColor,
-                boxShadow: [
-                  {
-                    offsetX: 0,
-                    offsetY: -3,
-                    blurRadius: glassShadowBlur,
-                    spreadDistance: glassShadowSpread,
-                    color: glassShadowColor,
-                  },
-                ],
               } as any,
             ]}
           >
@@ -1570,8 +1739,11 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
                 { borderRadius: innerRadius, overflow: "hidden" },
               ]}
             >
-              {/* glass: blur + tint (hidden by ColorFade once expanded) */}
-              <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              {/* glass: blur + tint — fades out with the mini content */}
+              <Animated.View
+                pointerEvents="none"
+                style={[StyleSheet.absoluteFill, { opacity: miniBgOpacity }]}
+              >
                 {glassFrost > 0 && (
                   <BlurView
                     intensity={glassBlurIntensity}
@@ -1591,9 +1763,19 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
                     { backgroundColor: glassTint },
                   ]}
                 />
-              </View>
+              </Animated.View>
 
-              <ColorFade color={artColor} opacity={colorOpacity} />
+              {/* Color layer: clipped to the pill's rounded top so it starts at the
+      mini player's top edge and expands DOWNWARD only (never above). */}
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  StyleSheet.absoluteFill,
+                  { borderRadius: innerRadius, overflow: "hidden" },
+                ]}
+              >
+                <ColorFade color={artColor} opacity={colorOpacity} />
+              </Animated.View>
 
               <Animated.View
                 pointerEvents="box-none"
@@ -1823,7 +2005,10 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
                   {sheetTitle}
                 </Text>
                 <Text
-                  style={[styles.optionsSongArtist, { color: theme.primary }]}
+                  style={[
+                    styles.optionsSongArtist,
+                    { color: theme.iconsColour },
+                  ]}
                   numberOfLines={1}
                 >
                   {sheetArtist}
@@ -2087,6 +2272,7 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
         onShow={handleFsShow}
         statusBarTranslucent
         navigationBarTranslucent
+        transparent
         supportedOrientations={[
           "portrait",
           "portrait-upside-down",
@@ -2100,6 +2286,7 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
         <FullscreenPlayer
           title={displayTitle}
           artist={displayArtist}
+          thumbUri={artworkUri}
           onClose={() => void exitFullscreen()}
           onCollapse={() => void exitFullscreen()}
         />
@@ -2112,6 +2299,7 @@ export default function MiniPlayer({ blurTargetRef }: MiniPlayerProps = {}) {
 // Styles
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
+  // Constant stacking: never change zIndex / elevation at runtime.
   root: {
     position: "absolute",
     top: 0,
@@ -2148,6 +2336,7 @@ const styles = StyleSheet.create({
 
   screenFrame: {
     position: "absolute",
+    elevation: 0,
   },
 
   miniContent: {
@@ -2159,9 +2348,8 @@ const styles = StyleSheet.create({
     paddingLeft: MINI_ART_LEFT,
     paddingRight: 16 + MINI_SIDE_MARGIN,
     zIndex: 3,
-    elevation: 6,
+    elevation: 0,
   },
-
   blockWrap: {
     position: "absolute",
     left: 0,
@@ -2214,6 +2402,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     overflow: "hidden",
     zIndex: 30,
+    elevation: 30,
   },
 
   zoomWrap: {
